@@ -1,13 +1,18 @@
 """Official US economic data from FRED (St. Louis Fed). Uses the public CSV download, so no API key."""
 import csv
 import io
+import json
 import logging
+import time
 from datetime import date
+from pathlib import Path
 
 import requests
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": "Mozilla/5.0 (compatible; MarketReels/1.0)"}
+# Last good readings. The data changes monthly, so a cached copy beats no economy reel when FRED is slow.
+CACHE = Path(__file__).resolve().parent.parent / "data" / "macro_cache.json"
 SERIES = {
     "CPIAUCSL": "CPI (all items)",
     "CPILFESL": "Core CPI",
@@ -20,8 +25,16 @@ SERIES = {
 
 def _series(sid, start):
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={sid}&cosd={start}"
-    r = requests.get(url, headers=UA, timeout=30)
-    r.raise_for_status()
+    for attempt in range(3):
+        try:
+            r = requests.get(url, headers=UA, timeout=45)
+            r.raise_for_status()
+            break
+        except requests.RequestException as e:
+            if attempt == 2:
+                raise
+            log.info("FRED %s attempt %d failed (%s); retrying", sid, attempt + 1, e)
+            time.sleep(5 * (attempt + 1))
     rows = []
     for row in csv.DictReader(io.StringIO(r.text)):
         v = row.get(sid)
@@ -49,6 +62,9 @@ def fetch_macro():
         dff = _series("DFF", f"{date.today().year - 1}-01-01")
         gdp = _series("A191RL1Q225SBEA", start)
     except Exception as e:
+        if CACHE.exists():
+            log.warning("FRED unavailable (%s); using cached readings", e)
+            return json.loads(CACHE.read_text(encoding="utf-8"))
         log.warning("FRED unavailable: %s", e)
         return {}
     cpi_yoy, core_yoy = _yoy(cpi), _yoy(core)
@@ -64,4 +80,5 @@ def fetch_macro():
         "unrate_hist": unrate[-60:],
     }
     log.info("macro: CPI %.1f%% (%s), unemployment %.1f%%", m["cpi_yoy"][1], m["cpi_yoy"][0], m["unrate"][1])
+    CACHE.write_text(json.dumps(m), encoding="utf-8")
     return m
