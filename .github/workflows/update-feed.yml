@@ -39,6 +39,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Refresh quotes (code-only deploys keep prices current too)
+        if: github.event_name == 'push'
+        run: python pipeline/quotes.py || echo "quotes unavailable; deploying the committed ones"
+
       - name: Install pipeline dependencies
         if: github.event_name != 'push'
         run: pip install -r pipeline/requirements.txt
