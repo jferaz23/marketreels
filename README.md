@@ -7,6 +7,9 @@ TikTok-style reels for learning the US stock market: daily market recaps, macro 
 | Tab | What it is |
 |---|---|
 | **For You** | Full-screen reels you swipe through. Scenes auto-advance like stories; tap right/left to skip, hold to pause, turn on narration to listen hands-free. Ranked by your ratings, with lessons mixed in. |
+| **Dashboard** | Live board: US indexes, index futures, Treasury yields + the official yield curve (2s10s, 3m10y), commodities, the dollar and major currencies, crypto, global markets and S&P sectors, with intraday mini charts. Tap a row for its chart and headlines. |
+| **PA** | Your own stocks with live daily moves. Add shares and cost to see value, today's P&L and total gain. Shows upcoming earnings and the latest headlines on your names. Saved on your device. |
+| **Calendar** | FOMC meetings with each decision once announced, US and global data releases (actual vs. consensus), large-company earnings, the midterms, market holidays and options expiration. |
 | **Scroll** | The same content as a normal free-scrolling feed of cards, to read at your own pace. Pull down to refresh. |
 | **Markets / Macro / News / Stock Ideas** | Today's reels by section. |
 | **Learn** | 5 courses, 25 two-minute chapters, each with a fill-in-the-blank takeaway and a quiz. Progress is tracked. |
@@ -16,6 +19,8 @@ On every reel and card:
 - **👍 / 😐 / 👎**: rate it. For You and Scroll re-rank around your ratings, and dislikes disappear. Tap the progress pill (top right) to see **Your taste** and copy your ratings as JSON.
 - **Ask**: opens Claude with the reel and your question filled in (see below). Free.
 - Daily goal (5 reels), day streak 🔥 and XP ⚡ from quizzes.
+
+**Experience level** (Settings): *Experienced* (default) leads with market updates, skips beginner explainer scenes and shows a lesson only every ~6 reels. *New to markets* explains everything.
 
 ## Live prices
 
@@ -39,7 +44,9 @@ GitHub Actions (free on public repos)                Your phone
   Update feed: 3×/weekday + Saturday                   index.html + assets/app.js
    pipeline/build_feed.py                              reads data/feed.json, data/lessons.json
     ├─ Yahoo Finance prices + live quotes              live prices: api/quotes (Vercel)
-    ├─ FRED economic data (public CSV)                   or data/quotes.json (Pages)
+    ├─ FRED economic data (public CSV), BLS API as backup
+    ├─ Calendar: Federal Reserve (FOMC dates + statements),
+    │   Nasdaq economic & earnings calendars, US Treasury yield curve                   or data/quotes.json (Pages)
     ├─ Free RSS news: CNBC, BBC, Guardian,
     │   Investing.com, Federal Reserve
     └─ writes data/feed.json + quotes.json → commit → deploy

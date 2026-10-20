@@ -15,6 +15,9 @@ SECTORS = {
     "XLI": "Industrials", "XLE": "Energy", "XLB": "Materials", "XLV": "Healthcare",
     "XLP": "Staples", "XLU": "Utilities", "XLRE": "Real Estate",
 }
+# Extra symbols shown on the app's Dashboard (kept in data/quotes.json as a fallback for the live endpoint).
+DASHBOARD_EXTRA = ["^NDX", "^MID", "RTY=F", "SI=F", "HG=F", "BZ=F", "NG=F", "ETH-USD", "SOL-USD",
+                   "EURUSD=X", "JPY=X", "GBPUSD=X", "CNY=X", "MXN=X"]
 CYCLICAL = {"XLK", "XLY", "XLF", "XLI", "XLB", "XLC"}
 DEFENSIVE = {"XLU", "XLP", "XLV"}
 

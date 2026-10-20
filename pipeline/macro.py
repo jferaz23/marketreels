@@ -1,4 +1,7 @@
-"""Official US economic data from FRED (St. Louis Fed). Uses the public CSV download, so no API key."""
+"""Official US economic data: FRED's public CSV first, then the BLS public API (both free, no key).
+
+FRED sometimes times out from GitHub's servers, so the BLS API covers CPI, core CPI, unemployment and
+payrolls, and the last good readings (data/macro_cache.json) fill anything still missing."""
 import csv
 import io
 import json
@@ -62,11 +65,8 @@ def fetch_macro():
         dff = _series("DFF", f"{date.today().year - 1}-01-01")
         gdp = _series("A191RL1Q225SBEA", start)
     except Exception as e:
-        if CACHE.exists():
-            log.warning("FRED unavailable (%s); using cached readings", e)
-            return json.loads(CACHE.read_text(encoding="utf-8"))
-        log.warning("FRED unavailable: %s", e)
-        return {}
+        log.warning("FRED unavailable (%s); trying BLS", e)
+        return _from_bls()
     cpi_yoy, core_yoy = _yoy(cpi), _yoy(core)
     jobs = [(payems[i][0], payems[i][1] - payems[i - 1][1]) for i in range(1, len(payems))]
     m = {
@@ -80,5 +80,46 @@ def fetch_macro():
         "unrate_hist": unrate[-60:],
     }
     log.info("macro: CPI %.1f%% (%s), unemployment %.1f%%", m["cpi_yoy"][1], m["cpi_yoy"][0], m["unrate"][1])
+    CACHE.write_text(json.dumps(m), encoding="utf-8")
+    return m
+
+
+BLS = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
+BLS_SERIES = {"CUUR0000SA0": "cpi", "CUUR0000SA0L1E": "core", "LNS14000000": "unrate", "CES0000000001": "payems"}
+
+
+def _from_bls():
+    """CPI, core CPI, unemployment and payrolls from BLS; other fields from the cache."""
+    cached = json.loads(CACHE.read_text(encoding="utf-8")) if CACHE.exists() else {}
+    try:
+        year = date.today().year
+        r = requests.post(BLS, json={"seriesid": list(BLS_SERIES), "startyear": str(year - 6), "endyear": str(year)},
+                          headers=UA, timeout=45)
+        r.raise_for_status()
+        body = r.json()
+        if body.get("status") != "REQUEST_SUCCEEDED":
+            raise RuntimeError(body.get("message"))
+        series = {}
+        for s in body["Results"]["series"]:
+            rows = [(f"{d['year']}-{d['period'][1:]}-01", float(d["value"])) for d in s["data"]
+                    if d["period"].startswith("M") and d["period"] != "M13" and d["value"] not in ("-", "")]
+            series[BLS_SERIES[s["seriesID"]]] = sorted(rows)
+    except Exception as e:
+        if cached:
+            log.warning("BLS unavailable too (%s); using cached readings", e)
+            return cached
+        log.warning("BLS unavailable: %s", e)
+        return {}
+    cpi_yoy, core_yoy = _yoy(series["cpi"]), _yoy(series["core"])
+    pay = series["payems"]
+    jobs = [(pay[i][0], pay[i][1] - pay[i - 1][1]) for i in range(1, len(pay))]
+    m = {**cached,
+         "cpi_yoy": cpi_yoy[-1], "cpi_yoy_prev": cpi_yoy[-2], "core_yoy": core_yoy[-1], "core_yoy_prev": core_yoy[-2],
+         "unrate": series["unrate"][-1], "unrate_prev": series["unrate"][-2],
+         "payrolls": jobs[-1], "payrolls_prev": jobs[-2], "cpi_hist": cpi_yoy[-60:], "unrate_hist": series["unrate"][-60:]}
+    if "fed_funds" not in m or "gdp" not in m:
+        log.warning("BLS has no fed funds / GDP and there's no cache; economy reel will be skipped")
+        return {}
+    log.info("macro (BLS): CPI %.1f%% (%s), unemployment %.1f%%", m["cpi_yoy"][1], m["cpi_yoy"][0], m["unrate"][1])
     CACHE.write_text(json.dumps(m), encoding="utf-8")
     return m

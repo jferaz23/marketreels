@@ -4,6 +4,7 @@ Every reel is a dict the app renders directly; see README for the scene schema.
 """
 import hashlib
 import re
+from datetime import date, timedelta
 
 from config import CYCLICAL, DEFENSIVE, FUTURES, GLOBAL, INDICES, SECTORS, TOPICS, WATCHLIST, YIELDS
 
@@ -99,6 +100,15 @@ def move_verb(c, live=False):
     if c > 0:
         return f"{'surges' if a >= 1.5 else 'jumps' if a >= 0.8 else 'rises' if a >= 0.3 else 'edges up'} {a:.1f}%"
     return f"{'tumbles' if a >= 1.5 else 'drops' if a >= 0.8 else 'slips' if a >= 0.3 else 'dips'} {a:.1f}%"
+
+
+def clock(t):
+    """'08:30' -> '8:30a', '14:00' -> '2:00p'"""
+    try:
+        h, m = (int(x) for x in str(t).split(":")[:2])
+    except (TypeError, ValueError):
+        return None
+    return f"{h % 12 or 12}:{m:02d}{'a' if h < 12 else 'p'}"
 
 
 def stable_choice(seed, items):
@@ -203,6 +213,9 @@ class ReelWriter:
                                       [SECTORS[s["symbol"]] for s in sectors[1:]][::3])
             scenes.append({"kind": "quiz", "question": f"Pop quiz: which sector led the market {when}?", "options": opts,
                            "answer": ans, "explain": f"{SECTORS[best['symbol']]} gained {signed(best['chg1d'])}, the best of all 11 S&P sectors."})
+        results = self.today_calendar_scene(results=True) if self.slot in ("close", "midday") else None
+        if results:
+            scenes.insert(min(4, len(scenes)), results)
         cross = [s for s in ("^TNX", "^VIX", "CL=F", "DX-Y.NYB", "GC=F", "BTC-USD") if s in self.q]
         if cross:
             items = []
@@ -233,7 +246,8 @@ class ReelWriter:
              "items": [{"label": f["name"], "value": level(f["symbol"], f["last"]), "change": f["chg1d"], **live_tag(f["symbol"])} for f in fut]
              + ([{"label": "10-yr yield", "value": level("^TNX", self.q["^TNX"]["last"]), "note": f"{bp(self.q['^TNX']):+.0f} bp", **live_tag("^TNX")}] if "^TNX" in self.q else [])},
             {"kind": "bullets", "headline": "On traders' radar", "items": [n["title"] for n in news]} if news else None,
-            {"kind": "text", "headline": "How to read futures",
+            self.today_calendar_scene(),
+            {"kind": "text", "headline": "How to read futures", "basic": True,
              "body": "Futures are contracts on where an index will trade later. A move of a few tenths of a percent overnight is normal; moves above **1%** usually mean big news broke."},
         ]
         self.add("premarket", "markets", "Pre-Market", scenes[0]["headline"], scenes, 1, art="bell",
@@ -302,6 +316,7 @@ class ReelWriter:
              "body": ("The curve is **inverted**: short-term rates are above long-term ones." if inverted else
                       "The curve slopes **upward**: longer loans pay more, which is the normal shape.") +
                      (f" The 10-year minus 3-month spread is {spread:+.2f} points." if spread is not None else "")},
+            self.curve_scene(),
             chart_scene(ten, "The 10-year's path", "Rising yields raise borrowing costs for mortgages and companies, and make bonds more competitive with stocks."),
             {"kind": "quiz", "question": "Based on today's numbers, is the yield curve (10-year minus 3-month) inverted?",
              "options": ["Yes, it's inverted", "No, it's upward sloping"], "answer": 0 if inverted else 1,
@@ -342,7 +357,7 @@ class ReelWriter:
             {"kind": "title", "eyebrow": "Around the world", "headline": f"{best['name']} leads global markets, {worst['name']} lags",
              "body": "US stocks don't trade in a vacuum. Here's how major markets abroad finished their latest session."},
             {"kind": "bars", "headline": "Latest session", "items": [{"label": g["name"], "value": round(g["chg1d"] or 0, 2)} for g in gl]},
-            {"kind": "text", "headline": "Why it matters for the US",
+            {"kind": "text", "headline": "Why it matters for the US", "basic": True,
              "body": "Asia trades first, then Europe, then the US. A sell-off overseas can set the mood for Wall Street's open, and big US companies earn a large share of their sales abroad."},
         ]
         self.add("world", "macro", "Global Markets", scenes[0]["headline"], scenes, 7, art="globe", media_query="world map city lights")
@@ -424,7 +439,7 @@ class ReelWriter:
                                               f"Over three months the stock is {tone(s['chg3m'], signed(s['chg3m']))}."))
             why = topic["why"] if topic else "Big headlines can shift expectations for profits, interest rates or the economy, which is what ultimately moves stock prices."
             lesson = self.lessons.get(topic["lesson"]) if topic else None
-            scenes.append({"kind": "text", "headline": "Why it matters",
+            scenes.append({"kind": "text", "headline": "Why it matters", "basic": True,
                            "body": why + (f"\n\nGo deeper: **{lesson}** in the Learn tab." if lesson else "")})
             bg = {"type": "image", "src": item["image"]} if item.get("image") else None
             key = "news-" + hashlib.md5(item["url"].encode()).hexdigest()[:8]
@@ -520,3 +535,146 @@ class ReelWriter:
                  summary="A data-driven profile built from public figures. Educational only, not a recommendation.",
                  sources=[{"title": f"Yahoo Finance: {sym}", "url": f"https://finance.yahoo.com/quote/{sym}/"},
                           {"title": f"SEC filings: {name}", "url": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={name.replace(' ', '+')}&type=10-K"}])
+
+    def curve_scene(self):
+        c = self.ctx.get("curve") or {}
+        p, wk = c.get("points") or {}, (c.get("week_ago") or {}).get("points") or {}
+        if not p.get("2Y") or not p.get("10Y"):
+            return None
+        s2_10 = (p["10Y"] - p["2Y"]) * 100
+        s3m_10 = (p["10Y"] - p["3M"]) * 100 if p.get("3M") else None
+
+        def wk_bp(k):
+            return f"{(p[k] - wk[k]) * 100:+.0f} bp w/w" if wk.get(k) and p.get(k) else None
+
+        return {"kind": "stats", "headline": f"Official curve · Treasury, {nice_date(c['date'])}", "items": [
+            {"label": "2-year", "value": f"{p['2Y']:.2f}%", "note": wk_bp("2Y")},
+            {"label": "10-year", "value": f"{p['10Y']:.2f}%", "note": wk_bp("10Y")},
+            {"label": "2s10s spread", "value": f"{s2_10:+.0f} bp", "note": "inverted" if s2_10 < 0 else "positive slope"},
+            {"label": "3m10y spread", "value": f"{s3m_10:+.0f} bp" if s3m_10 is not None else "—", "note": "the Fed's favorite recession signal"}]}
+
+    # ---------- calendar-driven reels ----------
+    def _events(self, day, min_imp=2):
+        evs = (self.ctx.get("calendar") or {}).get("events", [])
+        return [e for e in evs if e["date"] == day and e.get("importance", 0) >= min_imp]
+
+    def _earnings(self, day, n=6):
+        return [e for e in (self.ctx.get("calendar") or {}).get("earnings", []) if e["date"] == day][:n]
+
+    def _event_line(self, e):
+        t = clock(e.get("time"))
+        head = f"{t} · {e['title']}" if t else e["title"]
+        if e.get("actual"):
+            return head + f": **{e['actual']}**" + (f" (est. {e['consensus']})" if e.get("consensus") else "")
+        if e.get("consensus"):
+            return head + f" (est. {e['consensus']}, prior {e.get('previous') or '—'})"
+        return head + (f" (prior {e['previous']})" if e.get("previous") else "")
+
+    def _earnings_line(self, items):
+        pre = [e["symbol"] for e in items if e.get("when") == "pre"]
+        post = [e["symbol"] for e in items if e.get("when") == "post"]
+        other = [e["symbol"] for e in items if e.get("when") not in ("pre", "post")]
+        parts = ([f"before the open: {', '.join(pre)}"] if pre else []) + ([f"after the close: {', '.join(post)}"] if post else []) \
+            + ([", ".join(other)] if other else [])
+        return "Earnings " + "; ".join(parts) if parts else None
+
+    def today_calendar_scene(self, results=False):
+        evs = self._events(self.date)
+        lines = [self._event_line(e) for e in evs[:6]]
+        earn = self._earnings_line(self._earnings(self.date, 8))
+        if earn:
+            lines.append(earn)
+        if not lines:
+            return None
+        return {"kind": "bullets", "headline": "Today's data, actual vs. estimate" if results else "On today's calendar", "items": lines}
+
+    def fed_watch(self):
+        cal_ = self.ctx.get("calendar") or {}
+        fed = cal_.get("fed") or {}
+        nxt, last = fed.get("next"), fed.get("last")
+        today = date.fromisoformat(self.date)
+        curve = (self.ctx.get("curve") or {}).get("points", {})
+        res = (last or {}).get("result") or {}
+        rng = f"{res['low']:.2f}–{res['high']:.2f}%" if res else None
+        # Decision reel: the day of and the two days after a meeting.
+        if last and 0 <= (today - date.fromisoformat(last["date"])).days <= 2:
+            verb = {"cut": "cuts", "hike": "raises", "hold": "holds"}.get(res.get("action"), "decides")
+            scenes = [
+                {"kind": "title", "eyebrow": f"FOMC decision · {nice_date(last['date'])}",
+                 "headline": f"Fed {verb} rates: {last['actual']}",
+                 "body": "The Federal Open Market Committee's statement is out."
+                         + (f" Dissent: {res['dissents']}." if res.get("dissents") else " The vote was unanimous.")},
+                {"kind": "stats", "headline": "Where policy stands", "items": [
+                    {"label": "Fed funds target", "value": rng or "—"},
+                    {"label": "Change", "value": f"{res.get('change_bp', 0):+d} bp" if res else "—"},
+                    {"label": "2-yr Treasury", "value": f"{curve['2Y']:.2f}%" if curve.get("2Y") else "—", "note": "market's rate expectations"},
+                    {"label": "10-yr Treasury", "value": f"{curve['10Y']:.2f}%" if curve.get("10Y") else "—"}]},
+                {"kind": "text", "headline": "What markets watch now",
+                 "body": "The press conference at 2:30 pm ET, the minutes three weeks later, and whether the 2-year yield moves "
+                         "above or below the new target range, which shows if traders expect the next move to go the other way."},
+            ]
+            r = self.add("fed-decision", "macro", "Fed Decision", scenes[0]["headline"], scenes, 0, art="fed",
+                         sources=[{"title": "FOMC statement", "url": last.get("url")}])
+            if r:
+                r["id"] = f"fed-{last['date']}"  # one reel per meeting
+        # Preview reel: within 10 days of the next meeting.
+        if nxt and 0 <= (date.fromisoformat(nxt["date"]) - today).days <= 10:
+            days = (date.fromisoformat(nxt["date"]) - today).days
+            when = "today" if days == 0 else "tomorrow" if days == 1 else f"in {days} days"
+            # The headline releases the Fed weighs most, newest reading of each.
+            headline = ["CPI", "Core CPI", "Core PCE Price Index", "PCE Price Index", "Nonfarm Payrolls", "Unemployment Rate", "GDP", "Retail Sales", "PPI"]
+            since = (last or {}).get("date") or (today - timedelta(days=45)).isoformat()
+            pool = [e for e in cal_.get("events", []) if e.get("actual") and since < e["date"] <= self.date]
+            recent = [e for name in headline for e in sorted((x for x in pool if x["title"] == name), key=lambda x: x["date"])[-1:]]
+            spread = curve["2Y"] - res["high"] if curve.get("2Y") and res else None
+            if spread is None:
+                read = "Watch the 2-year Treasury yield into the meeting: it's the market's best read on the next move."
+            elif spread > 0.15:
+                read = "The 2-year yield tracks where traders expect policy to go. It's **above** the top of the target range, which leans toward a hike or a longer hold."
+            elif spread < -0.15:
+                read = "The 2-year yield tracks where traders expect policy to go. It's **below** the target range, which leans toward cuts ahead."
+            else:
+                read = "The 2-year yield tracks where traders expect policy to go. It's close to the current range, which points to no change."
+            macro = self.ctx.get("macro") or {}
+            scenes = [
+                {"kind": "title", "eyebrow": f"Fed watch · {nice_date(nxt['date'])}",
+                 "headline": f"The Fed decides {when}",
+                 "body": f"Statement at 2:00 pm ET on {nice_date(nxt['date'])}, press conference at 2:30."
+                         + (" This meeting includes new projections and the dot plot." if "projections" in nxt["title"] else "")},
+                {"kind": "stats", "headline": "The setup", "items": [
+                    {"label": "Current target", "value": rng or "—"},
+                    {"label": "Last move", "value": ((last or {}).get("actual") or "—").split(" to ")[0], "note": nice_date(last["date"]) if last else None},
+                    {"label": "2-yr Treasury", "value": f"{curve['2Y']:.2f}%" if curve.get("2Y") else "—",
+                     "note": f"{spread * 100:+.0f} bp vs. top of range" if spread is not None else None},
+                    {"label": "Core CPI", "value": f"{macro['core_yoy'][1]:.1f}%" if macro.get("core_yoy") else "—", "note": "year over year"}]},
+                {"kind": "bullets", "headline": "Data the Fed has seen since its last meeting",
+                 "items": [f"{nice_date(e['date']).split(',')[1].strip()} · " + self._event_line({**e, "time": None}) for e in recent[-5:]]} if recent else None,
+                {"kind": "text", "headline": "Read the 2-year", "body": read},
+            ]
+            self.add("fed-watch", "macro", "Fed Watch", scenes[0]["headline"], scenes, 1, art="fed",
+                     sources=[{"title": "Federal Reserve: FOMC calendar", "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"}])
+
+    def week_ahead(self):
+        cal_ = self.ctx.get("calendar") or {}
+        today = date.fromisoformat(self.date)
+        start = today + timedelta(days=7 - today.weekday()) if today.weekday() >= 5 else today - timedelta(days=today.weekday())
+        lo, hi = start.isoformat(), (start + timedelta(days=4)).isoformat()
+        big = [e for e in cal_.get("events", []) if lo <= e["date"] <= hi and e.get("importance", 0) >= 3]
+        earn = sorted((e for e in cal_.get("earnings", []) if lo <= e["date"] <= hi), key=lambda e: -e.get("cap", 0))[:8]
+        other = [e for e in cal_.get("events", []) if e.get("category") in ("politics", "market") and e.get("importance", 0) >= 2
+                 and lo <= e["date"] <= hi]
+        if not big and not earn:
+            return
+        day = lambda d: nice_date(d).split(",")[0]
+        when = lambda e: "pre-market" if e.get("when") == "pre" else "after close" if e.get("when") == "post" else "time TBA"
+        scenes = [
+            {"kind": "title", "eyebrow": f"Week ahead · {nice_date(lo)}", "headline": "The week's market-moving events",
+             "body": f"{len(big)} major releases and {len(earn)} of the biggest earnings reports on deck."},
+            {"kind": "bullets", "headline": "Key data & the Fed", "items": [f"{day(e['date'])} " + self._event_line(e) for e in big[:6]]} if big else None,
+            {"kind": "bullets", "headline": "Biggest earnings",
+             "items": [f"{day(e['date'])} · **{e['symbol']}** {e['name'][:26]} ({when(e)}, est. EPS {e.get('eps_est') or '—'})" for e in earn[:6]]} if earn else None,
+            {"kind": "bullets", "headline": "Also this week", "items": [f"{nice_date(e['date'])}: {e['title']}" for e in other[:4]]} if other else None,
+        ]
+        r = self.add("week-ahead", "macro", "Week Ahead", scenes[0]["headline"], scenes, 1, art="calendar")
+        if r:
+            r["id"] = f"week-ahead-{lo}"

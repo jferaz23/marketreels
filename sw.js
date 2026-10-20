@@ -1,6 +1,6 @@
 // App shell is cached for offline use; the feed is network-first so new reels show up right away.
-const VERSION = 'mr-v2';
-const SHELL = ['./', 'index.html', 'assets/styles.css', 'assets/app.js', 'manifest.webmanifest', 'assets/icons/icon.svg', 'assets/icons/icon-192.png'];
+const VERSION = 'mr-v4';
+const SHELL = ['./', 'index.html', 'assets/styles.css?v=4', 'assets/app.js?v=4', 'manifest.webmanifest', 'assets/icons/icon.svg', 'assets/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -17,7 +17,7 @@ self.addEventListener('fetch', (e) => {
   const networkFirst = url.pathname.includes('/data/') || e.request.mode === 'navigate' || /\.(js|css)$/.test(url.pathname);
   if (networkFirst) {
     e.respondWith(
-      fetch(e.request)
+      fetch(e.request, { cache: 'no-cache' }) // revalidate so updates appear on the next open
         .then((res) => { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(e.request, copy)); return res; })
         .catch(() => caches.match(e.request).then((r) => r || caches.match('index.html')))
     );

@@ -12,6 +12,9 @@
   };
   const TABS = [
     { id: 'foryou', label: 'For You' },
+    { id: 'board', label: 'Dashboard' },
+    { id: 'pa', label: 'PA' },
+    { id: 'calendar', label: 'Calendar' },
     { id: 'scroll', label: 'Scroll' },
     { id: 'markets', label: 'Markets' },
     { id: 'macro', label: 'Macro' },
@@ -50,8 +53,15 @@
     autoplay: store.get('autoplay', true),
     rate: store.get('rate', 1.05),
     xp: store.get('xp', 0),
+    level: store.get('level', 'pro'), // 'pro' = experienced (skips beginner explainers), 'new' = everything
+    pa: store.get('pa', []), // [{sym, shares, cost, added}]
+    paSort: store.get('paSort', 'move'),
+    calFilter: 'all',
+    calendar: null,
+    curve: null,
     player: null,
   };
+  const visibleScenes = (reel) => (reel.scenes || []).filter((s) => !(state.level === 'pro' && s.basic));
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const feedEl = $('#feed');
@@ -199,7 +209,8 @@
       .sort((a, b) => a.k - b.k)
       .map((x) => x.r);
     const learnPref = profile.cat.learn ? profile.cat.learn.sum / (profile.cat.learn.n + 2) : 0;
-    const every = Math.max(2, Math.min(5, Math.round(3 - learnPref * 2)));
+    // Experienced readers get market updates first, with a lesson only every ~6 reels.
+    const every = state.level === 'pro' ? Math.max(4, Math.round(6 - learnPref * 2)) : Math.max(2, Math.min(5, Math.round(3 - learnPref * 2)));
     const lessons = orderedLessons().filter((r) => !disliked(r));
     const out = [];
     let li = 0;
@@ -508,15 +519,412 @@
     });
   })();
 
+  // ---------- Dashboard, PA and Calendar pages ----------
+  // Live tables use api/quotes?spark=1 (intraday points for mini charts); without the Vercel function they fall
+  // back to data/quotes.json prices (no mini charts).
+  const BOARD = [
+    { title: 'US indexes', rows: [['^GSPC', 'S&P 500'], ['^IXIC', 'Nasdaq Composite'], ['^NDX', 'Nasdaq-100'], ['^DJI', 'Dow Jones'], ['^RUT', 'Russell 2000'], ['^MID', 'S&P MidCap 400'], ['^VIX', 'VIX (volatility)']] },
+    { title: 'Index futures', rows: [['ES=F', 'S&P 500 futures'], ['NQ=F', 'Nasdaq-100 futures'], ['YM=F', 'Dow futures'], ['RTY=F', 'Russell 2000 futures']] },
+    { title: 'Treasury yields', kind: 'yields', rows: [['^IRX', '3-month', 'yield'], ['^FVX', '5-year', 'yield'], ['^TNX', '10-year', 'yield'], ['^TYX', '30-year', 'yield']] },
+    { title: 'Commodities', rows: [['GC=F', 'Gold', 'usd'], ['SI=F', 'Silver', 'usd'], ['HG=F', 'Copper', 'usd'], ['CL=F', 'WTI crude oil', 'usd'], ['BZ=F', 'Brent crude oil', 'usd'], ['NG=F', 'Natural gas', 'usd']] },
+    { title: 'US dollar & currencies', rows: [['DX-Y.NYB', 'US Dollar Index (DXY)'], ['EURUSD=X', 'EUR/USD', 'fx'], ['JPY=X', 'USD/JPY', 'fx'], ['GBPUSD=X', 'GBP/USD', 'fx'], ['CNY=X', 'USD/CNY', 'fx'], ['MXN=X', 'USD/MXN', 'fx']] },
+    { title: 'Crypto', rows: [['BTC-USD', 'Bitcoin', 'usd0'], ['ETH-USD', 'Ethereum', 'usd'], ['SOL-USD', 'Solana', 'usd']] },
+    { title: 'Global markets', rows: [['^STOXX50E', 'Euro Stoxx 50'], ['^GDAXI', 'Germany DAX'], ['^FTSE', 'UK FTSE 100'], ['^N225', 'Japan Nikkei 225'], ['^HSI', 'Hong Kong Hang Seng'], ['000001.SS', 'Shanghai Composite'], ['^BSESN', 'India Sensex']] },
+    { title: 'S&P 500 sectors', kind: 'sectors', rows: [['XLK', 'Tech'], ['XLC', 'Comm. Services'], ['XLY', 'Discretionary'], ['XLF', 'Financials'], ['XLI', 'Industrials'], ['XLE', 'Energy'], ['XLB', 'Materials'], ['XLV', 'Healthcare'], ['XLP', 'Staples'], ['XLU', 'Utilities'], ['XLRE', 'Real Estate']] },
+  ];
+  let pageTimer = 0;
+  const pageQuotes = {};
+
+  const fmtPx = (fmt, v, type) => {
+    if (v == null) return '—';
+    if (fmt === 'fx') return v.toFixed(v < 20 ? 4 : 2);
+    if (fmt === 'yield') return v.toFixed(3) + '%';
+    if (fmt === 'usd0') return '$' + Math.round(v).toLocaleString('en-US');
+    if (fmt === 'usd' || type === 'EQUITY' || type === 'ETF') return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+  const shortName = (n) => String(n || '').replace(/,? (Inc|Corp|Corporation|Incorporated|Company|Co|Ltd|plc|PLC|Holdings|Group)\.?$/i, '').replace(/,$/, '');
+  const signedNum = (v, d = 2) => (v == null ? '' : (v >= 0 ? '+' : '−') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }));
+
+  function sparkSVG(points, prev, w = 74, h = 28) {
+    const pts = (points || []).filter((v) => v != null);
+    if (pts.length < 2) return `<svg class="spark" viewBox="0 0 ${w} ${h}"></svg>`;
+    const all = prev != null ? [...pts, prev] : pts;
+    const min = Math.min(...all), max = Math.max(...all), span = max - min || 1;
+    const x = (i) => (i / (pts.length - 1)) * w, y = (v) => 2 + (1 - (v - min) / span) * (h - 4);
+    const d = pts.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join('');
+    const up = pts[pts.length - 1] >= (prev ?? pts[0]);
+    return `<svg class="spark" viewBox="0 0 ${w} ${h}" aria-hidden="true">${prev != null ? `<line x1="0" x2="${w}" y1="${y(prev).toFixed(1)}" y2="${y(prev).toFixed(1)}" class="spark-base"/>` : ''}<path d="${d}" class="${up ? 'up' : 'down'}"/></svg>`;
+  }
+
+  async function fetchPageQuotes(symbols) {
+    if (!symbols.length) return {};
+    let got = null;
+    if (live.api !== false) {
+      try {
+        const r = await fetch('api/quotes?spark=1&s=' + encodeURIComponent(symbols.join(',')), { cache: 'no-store' });
+        const j = r.ok && (r.headers.get('content-type') || '').includes('json') ? await r.json() : null;
+        if (j?.quotes) { got = j.quotes; live.api = true; }
+      } catch { /* fall through */ }
+    }
+    if (!got) {
+      if (!Object.keys(live.quotes).length) await refreshQuotes();
+      got = Object.fromEntries(symbols.filter((s) => live.quotes[s]).map((s) => [s, live.quotes[s]]));
+    }
+    Object.assign(pageQuotes, got);
+    // Keep the tape and reels in sync with the fresher prices.
+    for (const [s, q] of Object.entries(got)) live.quotes[s] = { ...live.quotes[s], ...q };
+    renderLiveStatus();
+    return got;
+  }
+
+  function schedulePage(fn) {
+    clearTimeout(pageTimer);
+    pageTimer = setTimeout(() => { if (!document.hidden && ['board', 'pa'].includes(state.tab)) fn(); }, live.api ? 30e3 : 120e3);
+  }
+
+  async function loadSideData() {
+    if (state.calendar && state.curve) return;
+    const [c, v] = await Promise.allSettled([fetchJSON('data/calendar.json'), fetchJSON('data/curve.json')]);
+    state.calendar = c.status === 'fulfilled' ? c.value : { events: [], earnings: [], fed: {} };
+    state.curve = v.status === 'fulfilled' ? v.value : null;
+  }
+
+  function quoteRow(sym, name, fmt, extra = '') {
+    const q = pageQuotes[sym] || live.quotes[sym];
+    const isYield = fmt === 'yield';
+    const chgTxt = !q ? '—' : isYield ? (q.prev != null ? `${signedNum((q.price - q.prev) * 100, 1)} bp` : '—') : pct(q.chg);
+    const absDigits = fmt === 'fx' && q?.price < 20 ? 4 : q?.price > 1000 ? 0 : 2;
+    const abs = q && q.prev != null && !isYield ? signedNum(q.price - q.prev, absDigits) : '';
+    return `<button class="qrow" data-sym="${esc(sym)}" data-name="${esc(name)}" data-fmt="${esc(fmt || '')}">
+      <span class="q-name"><b>${esc(shortName(name))}</b><small>${esc(sym.replace('^', ''))}</small></span>
+      ${sparkSVG(q?.points, q?.prev)}
+      <span class="q-px">${q ? fmtPx(fmt, q.price, q.type) : '—'}</span>
+      <span class="q-chg ${q ? dirClass(isYield ? q.price - q.prev : q.chg) : ''}">${chgTxt}<small>${abs}</small></span>
+      ${extra ? `<span class="q-extra">${extra.replace(/^ · /, '')}</span>` : ''}</button>`;
+  }
+
+  function fedCard() {
+    const fed = state.calendar?.fed || {};
+    const last = fed.last, nxt = fed.next;
+    const res = last?.result;
+    const days = nxt ? Math.round((new Date(nxt.date + 'T00:00:00') - new Date(new Date().toDateString())) / 86400000) : null;
+    return `<section class="dash-card fed-card"><div class="dash-head"><h2>Federal Reserve</h2>${state.tab === 'calendar' ? '' : '<button class="linkbtn" data-go="calendar">Calendar ›</button>'}</div>
+      <div class="fed-grid">
+        <div><small>Target range</small><b>${res ? `${res.low.toFixed(2)}–${res.high.toFixed(2)}%` : '—'}</b></div>
+        <div><small>Last move</small><b>${last ? esc((last.actual || '').split(' to ')[0]) : '—'}</b><em>${last ? esc(relDate(last.date)) : ''}</em></div>
+        <div><small>Next decision</small><b>${nxt ? esc(new Date(nxt.date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })) : '—'}</b><em>${days != null ? (days <= 0 ? 'today, 2:00 pm ET' : `in ${days} day${days === 1 ? '' : 's'}`) : ''}</em></div>
+      </div></section>`;
+  }
+
+  function curveCard() {
+    const c = state.curve;
+    if (!c?.points) return '';
+    const order = ['1M', '3M', '6M', '1Y', '2Y', '3Y', '5Y', '7Y', '10Y', '20Y', '30Y'].filter((k) => c.points[k] != null);
+    const wk = c.week_ago?.points || {};
+    const vals = order.map((k) => c.points[k]).concat(order.map((k) => wk[k]).filter((v) => v != null));
+    const min = Math.min(...vals) - 0.05, max = Math.max(...vals) + 0.05;
+    const W = 320, H = 110, x = (i) => 12 + (i / (order.length - 1)) * (W - 24), y = (v) => 8 + (1 - (v - min) / (max - min)) * (H - 26);
+    const line = (src) => order.map((k, i) => (src[k] == null ? '' : `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(src[k]).toFixed(1)}`)).join('');
+    const p = c.points;
+    const s210 = p['2Y'] != null && p['10Y'] != null ? (p['10Y'] - p['2Y']) * 100 : null;
+    const s3m10 = p['3M'] != null && p['10Y'] != null ? (p['10Y'] - p['3M']) * 100 : null;
+    const wkbp = (k) => (wk[k] != null && p[k] != null ? `${signedNum((p[k] - wk[k]) * 100, 0)} bp w/w` : '');
+    return `<section class="dash-card"><div class="dash-head"><h2>Yield curve</h2><small>US Treasury · ${esc(relDate(c.date))}</small></div>
+      <svg class="curve" viewBox="0 0 ${W} ${H}">
+        <path d="${line(wk)}" class="curve-wk"/><path d="${line(p)}" class="curve-now"/>
+        ${order.map((k, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p[k]).toFixed(1)}" r="2.6" class="curve-dot"/><text x="${x(i).toFixed(1)}" y="${H - 3}" text-anchor="middle">${k}</text>`).join('')}
+      </svg>
+      <div class="curve-legend"><span><i class="now"></i>Today</span><span><i class="wk"></i>Week ago</span></div>
+      <div class="fed-grid">
+        <div><small>2-year</small><b>${p['2Y']?.toFixed(2) ?? '—'}%</b><em>${wkbp('2Y')}</em></div>
+        <div><small>2s10s</small><b class="${s210 < 0 ? 'down' : ''}">${s210 != null ? signedNum(s210, 0) + ' bp' : '—'}</b><em>${s210 < 0 ? 'inverted' : 'normal slope'}</em></div>
+        <div><small>3m10y</small><b class="${s3m10 < 0 ? 'down' : ''}">${s3m10 != null ? signedNum(s3m10, 0) + ' bp' : '—'}</b><em>${s3m10 < 0 ? 'inverted' : 'normal slope'}</em></div>
+      </div></section>`;
+  }
+
+  async function renderBoard() {
+    feedEl.classList.add('free');
+    const page = document.createElement('div');
+    page.className = 'page';
+    feedEl.appendChild(page);
+    const draw = () => {
+      if (state.tab !== 'board') return;
+      const sectorRows = (sec) => [...sec.rows].sort((a, b) => ((pageQuotes[b[0]]?.chg ?? -99) - (pageQuotes[a[0]]?.chg ?? -99)));
+      page.innerHTML = `<div class="page-head"><h1>Dashboard</h1><p>${esc(liveStatus().text)} · tap any row for the intraday chart and news.</p></div>
+        ${state.calendar ? fedCard() : ''}
+        ${BOARD.map((sec) => `<section class="dash-card"><div class="dash-head"><h2>${sec.title}</h2>${sec.kind === 'yields' ? '<small>change in bp</small>' : ''}</div>
+          ${(sec.kind === 'sectors' ? sectorRows(sec) : sec.rows).map(([s, n, f]) => quoteRow(s, n, f)).join('')}</section>
+          ${sec.kind === 'yields' ? curveCard() : ''}`).join('')}
+        <p class="fineprint">Prices from Yahoo Finance, a few seconds to ~10 minutes delayed (futures). Treasury curve: end of day.</p>`;
+    };
+    if (Object.keys(pageQuotes).length) draw();
+    else page.innerHTML = '<div class="loading"><div><div class="spinner"></div>Loading markets…</div></div>';
+    const tick = async () => {
+      await Promise.all([fetchPageQuotes(BOARD.flatMap((s) => s.rows.map((r) => r[0]))), loadSideData()]);
+      const y = feedEl.scrollTop;
+      draw();
+      feedEl.scrollTop = y;
+      schedulePage(tick);
+    };
+    tick();
+    page.addEventListener('click', onPageClick);
+  }
+
+  // ---------- PA: personal stocks ----------
+  const paSave = () => store.set('pa', state.pa);
+
+  function paTotals() {
+    let value = 0, day = 0, cost = 0, hasShares = false, up = 0, down = 0;
+    state.pa.forEach((h) => {
+      const q = pageQuotes[h.sym] || live.quotes[h.sym];
+      if (!q) return;
+      if (q.chg > 0) up++; else if (q.chg < 0) down++;
+      if (h.shares) {
+        hasShares = true;
+        value += h.shares * q.price;
+        if (q.prev != null) day += h.shares * (q.price - q.prev);
+        if (h.cost) cost += h.shares * h.cost;
+      }
+    });
+    return { value, day, cost, hasShares, up, down };
+  }
+
+  function nextEarnings(sym) {
+    const today = todayKey();
+    return (state.calendar?.earnings || []).find((e) => e.symbol === sym && e.date >= today);
+  }
+
+  async function renderPA() {
+    feedEl.classList.add('free');
+    const page = document.createElement('div');
+    page.className = 'page';
+    feedEl.appendChild(page);
+    const newsBox = document.createElement('div');
+    const draw = () => {
+      if (state.tab !== 'pa') return;
+      const t = paTotals();
+      const rows = [...state.pa];
+      if (state.paSort === 'move') rows.sort((a, b) => Math.abs(pageQuotes[b.sym]?.chg ?? 0) - Math.abs(pageQuotes[a.sym]?.chg ?? 0));
+      if (state.paSort === 'az') rows.sort((a, b) => a.sym.localeCompare(b.sym));
+      const dayPct = t.value - t.day ? (t.day / (t.value - t.day)) * 100 : 0;
+      page.innerHTML = `<div class="page-head"><h1>PA</h1><p>Your stocks, live. Saved on this device only. Add shares to see your P&L.</p></div>
+        <section class="dash-card pa-summary">
+          ${t.hasShares ? `<div class="fed-grid">
+            <div><small>Value</small><b>$${Math.round(t.value).toLocaleString('en-US')}</b></div>
+            <div><small>Today</small><b class="${dirClass(t.day)}">${signedNum(t.day, 0).replace(/^([+−])/, '$1$')}</b><em class="${dirClass(dayPct)}">${pct(dayPct)}</em></div>
+            <div><small>Total gain</small><b class="${dirClass(t.value - t.cost)}">${t.cost ? signedNum(t.value - t.cost, 0).replace(/^([+−])/, '$1$') : '—'}</b><em>${t.cost ? pct((t.value / t.cost - 1) * 100) : 'add cost basis'}</em></div></div>`
+          : `<div class="fed-grid"><div><small>Stocks</small><b>${state.pa.length}</b></div><div><small>Up today</small><b class="up">${t.up}</b></div><div><small>Down today</small><b class="down">${t.down}</b></div></div>`}
+          <form class="pa-add" id="paAdd"><input id="paSym" maxlength="12" autocomplete="off" autocapitalize="characters" placeholder="Add a ticker, e.g. AAPL"><button>Add</button></form>
+          ${!state.pa.length ? `<div class="pa-suggest">${['SPY', 'QQQ', 'AAPL', 'NVDA', 'MSFT', 'AMZN'].map((s) => `<button data-add="${s}">+ ${s}</button>`).join('')}</div>` : ''}
+        </section>
+        ${state.pa.length ? `<section class="dash-card"><div class="dash-head"><h2>Holdings & watchlist</h2>
+          <div class="seg-ctl">${[['move', 'Movers'], ['az', 'A–Z'], ['added', 'Added']].map(([k, l]) => `<button data-sort="${k}" class="${state.paSort === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+          ${rows.map((h) => {
+            const q = pageQuotes[h.sym];
+            const e = nextEarnings(h.sym);
+            const pos = h.shares && q ? ` · ${h.shares} sh · $${Math.round(h.shares * q.price).toLocaleString('en-US')}${q.prev != null ? ` · <span class="${dirClass(q.chg)}">${signedNum(h.shares * (q.price - q.prev), 0)}</span>` : ''}` : '';
+            const earn = e ? ` · <span class="earn-badge">Earnings ${esc(new Date(e.date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))}</span>` : '';
+            return quoteRow(h.sym, q?.name || h.sym, '', pos + earn);
+          }).join('')}</section>` : ''}`;
+      page.appendChild(newsBox);
+    };
+    const loadNews = async () => {
+      const top = [...state.pa].sort((a, b) => Math.abs(pageQuotes[b.sym]?.chg ?? 0) - Math.abs(pageQuotes[a.sym]?.chg ?? 0)).slice(0, 5);
+      if (!top.length) { newsBox.innerHTML = ''; return; }
+      const lists = await Promise.all(top.map((h) => fetch('api/news?s=' + encodeURIComponent(h.sym)).then((r) => (r.ok ? r.json() : null)).catch(() => null)));
+      const seen = new Set();
+      const items = lists.flatMap((l, i) => (l?.news || []).slice(0, 3).map((n) => ({ ...n, sym: top[i].sym })))
+        .filter((n) => n.title && !seen.has(n.title) && seen.add(n.title)).sort((a, b) => (b.time || 0) - (a.time || 0)).slice(0, 10);
+      newsBox.innerHTML = items.length ? `<section class="dash-card"><div class="dash-head"><h2>Latest on your stocks</h2></div>
+        <ul class="src-list">${items.map((n) => `<li><a href="${esc(n.url)}" target="_blank" rel="noopener noreferrer"><span class="meta-ticker">$${esc(n.sym)}</span> ${esc(n.title)}<small>${esc(n.publisher || '')} · ${n.time ? esc(new Date(n.time * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : ''}</small></a></li>`).join('')}</ul></section>` : '';
+    };
+    const tick = async () => {
+      await Promise.all([fetchPageQuotes(state.pa.map((h) => h.sym)), loadSideData()]);
+      const y = feedEl.scrollTop;
+      draw();
+      feedEl.scrollTop = y;
+      schedulePage(tick);
+    };
+    draw();
+    tick().then(loadNews);
+    page.addEventListener('submit', async (e) => {
+      if (e.target.id !== 'paAdd') return;
+      e.preventDefault();
+      addHolding($('#paSym').value, tick, loadNews);
+    });
+    page.addEventListener('click', (e) => {
+      const add = e.target.closest('[data-add]');
+      if (add) return addHolding(add.dataset.add, tick, loadNews);
+      const s = e.target.closest('[data-sort]');
+      if (s) { state.paSort = s.dataset.sort; store.set('paSort', state.paSort); draw(); return; }
+      onPageClick(e);
+    });
+  }
+
+  async function addHolding(raw, tick, loadNews) {
+    const sym = String(raw || '').trim().toUpperCase().replace(/^\$/, '');
+    if (!/^[A-Z0-9^=.\-]{1,12}$/.test(sym)) return toast('Enter a ticker like AAPL');
+    if (state.pa.some((h) => h.sym === sym)) return toast(`${sym} is already in PA`);
+    const got = await fetchPageQuotes([sym]);
+    if (!got[sym]) return toast(live.api ? `Couldn't find ${sym}` : 'Adding stocks needs the live (Vercel) version');
+    state.pa.push({ sym, shares: null, cost: null, added: Date.now() });
+    paSave();
+    toast(`Added ${sym}`);
+    await tick();
+    loadNews();
+  }
+
+  // Tap a row: intraday chart, stats, news, Ask Claude, and PA controls.
+  function onPageClick(e) {
+    const go = e.target.closest('[data-go]');
+    if (go) { setTab(go.dataset.go); return; }
+    const row = e.target.closest('.qrow');
+    if (row) openQuote(row.dataset.sym, row.dataset.name, row.dataset.fmt);
+  }
+
+  async function openQuote(sym, name, fmt) {
+    const q = pageQuotes[sym] || live.quotes[sym];
+    const held = state.pa.find((h) => h.sym === sym);
+    const equity = q && (q.type === 'EQUITY' || q.type === 'ETF');
+    const isYield = fmt === 'yield';
+    const e = nextEarnings(sym);
+    openSheet(`<div class="quote-sheet">
+      <h3>${esc(name)} <small>${esc(sym)}</small></h3>
+      <div class="qs-price"><b>${q ? fmtPx(fmt, q.price, q.type) : '—'}</b>
+        <span class="${q ? dirClass(isYield ? q.price - q.prev : q.chg) : ''}">${q ? (isYield ? `${signedNum((q.price - q.prev) * 100, 1)} bp` : `${signedNum(q.price - q.prev)} (${pct(q.chg)})`) : ''}</span></div>
+      <div class="qs-chart">${q?.points ? sparkSVG(q.points, q.prev, 320, 120) : '<p class="fineprint">Intraday chart needs the live (Vercel) version.</p>'}</div>
+      <p class="fineprint">Today, 5-minute points · dashed line = previous close${q?.prev != null ? ` (${fmtPx(fmt, q.prev, q.type)})` : ''}${q?.time ? ` · as of ${esc(new Date(q.time * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}` : ''}</p>
+      ${e ? `<p><span class="earn-badge">Earnings ${esc(new Date(e.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }))}${e.when === 'pre' ? ', before the open' : e.when === 'post' ? ', after the close' : ''}</span> Consensus EPS ${esc(e.eps_est || '—')} · year-ago ${esc(e.eps_last_year || '—')}</p>` : ''}
+      ${held ? `<form class="pa-edit" id="paEdit"><label>Shares<input id="paShares" inputmode="decimal" value="${held.shares ?? ''}" placeholder="0"></label>
+        <label>Avg cost<input id="paCost" inputmode="decimal" value="${held.cost ?? ''}" placeholder="$"></label><button>Save</button></form>` : ''}
+      <div class="qs-actions">
+        <button class="btn primary" id="qsAsk">Ask Claude why it's moving</button>
+        ${equity && !held ? '<button class="btn ghost" id="qsAdd">+ Add to PA</button>' : ''}
+        ${held ? '<button class="btn ghost" id="qsRemove">Remove from PA</button>' : ''}
+        <a class="btn ghost" href="https://finance.yahoo.com/quote/${encodeURIComponent(sym)}/" target="_blank" rel="noopener">Open in Yahoo Finance</a>
+      </div>
+      <h4>Headlines</h4><ul class="src-list" id="qsNews"><li class="fineprint">Loading…</li></ul></div>`);
+    $('#qsAsk').onclick = () => {
+      const move = q ? (isYield ? `${signedNum((q.price - q.prev) * 100, 1)} bp` : pct(q.chg)) : 'unknown';
+      openChat({ id: 'q-' + sym, title: `${name} (${sym}) ${move} today`, category: 'markets', tag: 'Live quote', ticker: equity ? sym : null, art: 'chart',
+        scenes: [{ kind: 'text', headline: `${name} is at ${q ? fmtPx(fmt, q.price, q.type) : '—'}, ${move} on the day`, body: `Previous close ${q ? fmtPx(fmt, q.prev, q.type) : '—'}.` }] });
+    };
+    $('#qsAdd') && ($('#qsAdd').onclick = async () => { closeSheet(); await addHolding(sym, async () => renderFeed(), () => {}); });
+    $('#qsRemove') && ($('#qsRemove').onclick = () => { state.pa = state.pa.filter((h) => h.sym !== sym); paSave(); closeSheet(); renderFeed(); toast(`Removed ${sym}`); });
+    $('#paEdit') && ($('#paEdit').onsubmit = (ev) => {
+      ev.preventDefault();
+      const num = (v) => { const n = parseFloat(String(v).replace(/[$,]/g, '')); return Number.isFinite(n) && n > 0 ? n : null; };
+      held.shares = num($('#paShares').value);
+      held.cost = num($('#paCost').value);
+      paSave(); closeSheet(); renderFeed(); toast('Position saved');
+    });
+    try {
+      const r = await fetch('api/news?s=' + encodeURIComponent(sym));
+      const j = r.ok ? await r.json() : null;
+      const items = (j?.news || []).slice(0, 6);
+      $('#qsNews').innerHTML = items.length ? items.map((n) => `<li><a href="${esc(n.url)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}<small>${esc(n.publisher || '')}${n.time ? ' · ' + esc(new Date(n.time * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : ''}</small></a></li>`).join('')
+        : '<li class="fineprint">No recent headlines.</li>';
+    } catch { $('#qsNews') && ($('#qsNews').innerHTML = '<li class="fineprint">Headlines need the live (Vercel) version.</li>'); }
+  }
+
+  // ---------- Calendar ----------
+  const CAL_FILTERS = [['all', 'All'], ['fed', 'Fed'], ['data', 'US data'], ['earnings', 'Earnings'], ['global', 'Global'], ['other', 'Politics & market']];
+  const CAT_LABEL = { fed: 'Fed', inflation: 'Inflation', jobs: 'Jobs', growth: 'Growth', consumer: 'Consumer', housing: 'Housing', bonds: 'Bonds', energy: 'Energy', global: 'Global', politics: 'Politics', market: 'Market', data: 'Data' };
+  const clock12 = (t) => {
+    const m = /^(\d{1,2}):(\d{2})/.exec(t || '');
+    if (!m) return '';
+    const h = Number(m[1]);
+    return `${h % 12 || 12}:${m[2]}${h < 12 ? 'a' : 'p'}`;
+  };
+
+  function calMatch(e) {
+    const f = state.calFilter;
+    if (f === 'all') return true;
+    if (f === 'fed') return e.category === 'fed';
+    if (f === 'global') return e.category === 'global';
+    if (f === 'other') return e.category === 'politics' || e.category === 'market';
+    if (f === 'data') return !['fed', 'global', 'politics', 'market'].includes(e.category);
+    return false;
+  }
+
+  function eventRow(e) {
+    const vals = e.actual
+      ? `<span class="ev-act">${esc(e.actual)}</span>${e.consensus ? `<span class="ev-sub">est. ${esc(e.consensus)}</span>` : ''}`
+      : `${e.consensus ? `<span class="ev-sub">est. ${esc(e.consensus)}</span>` : ''}${e.previous ? `<span class="ev-sub">prior ${esc(e.previous)}</span>` : ''}`;
+    return `<div class="ev cat-${esc(e.category)}">
+      <span class="ev-time">${esc(clock12(e.time)) || '—'}</span>
+      <span class="ev-main"><b>${esc(e.title)}</b><span class="ev-meta"><i class="imp imp-${e.importance}"></i>${esc(CAT_LABEL[e.category] || e.category)}${e.note ? ` · ${esc(e.note)}` : ''}</span>
+        ${e.url ? `<a class="ev-link" href="${esc(e.url)}" target="_blank" rel="noopener">${e.actual ? 'Statement ›' : 'Fed calendar ›'}</a>` : ''}</span>
+      <span class="ev-vals">${vals}</span></div>`;
+  }
+
+  function earningsRow(day, list) {
+    const mine = new Set(state.pa.map((h) => h.sym));
+    const sorted = [...list].sort((a, b) => (mine.has(b.symbol) - mine.has(a.symbol)) || (b.cap - a.cap));
+    const chip = (x) => `<span class="earn-chip ${mine.has(x.symbol) ? 'mine' : ''}" title="${esc(x.name)} · EPS est. ${esc(x.eps_est || '—')}">${esc(x.symbol)}<small>${x.when === 'pre' ? 'AM' : x.when === 'post' ? 'PM' : ''}</small></span>`;
+    return `<details class="ev ev-earn"><summary><span class="ev-time">—</span><span class="ev-main"><b>Earnings: ${list.length} large compan${list.length === 1 ? 'y' : 'ies'}</b>
+      <span class="ev-meta">${sorted.slice(0, 8).map(chip).join('')}${list.length > 8 ? ` +${list.length - 8}` : ''}</span></span><span class="ev-vals"><span class="ev-sub">tap for EPS</span></span></summary>
+      <ul class="earn-list">${sorted.map((x) => `<li><b class="${mine.has(x.symbol) ? 'hl' : ''}">${esc(x.symbol)}</b> ${esc(x.name)}<span>${x.when === 'pre' ? 'Before open' : x.when === 'post' ? 'After close' : 'Time TBA'} · EPS est. ${esc(x.eps_est || '—')} · yr ago ${esc(x.eps_last_year || '—')}</span></li>`).join('')}</ul></details>`;
+  }
+
+  async function renderCalendar() {
+    feedEl.classList.add('free');
+    const page = document.createElement('div');
+    page.className = 'page';
+    page.innerHTML = '<div class="loading"><div><div class="spinner"></div>Loading calendar…</div></div>';
+    feedEl.appendChild(page);
+    await loadSideData();
+    const draw = () => {
+      const cal_ = state.calendar || {};
+      const today = todayKey();
+      const evs = (cal_.events || []).filter(calMatch);
+      const showEarn = ['all', 'earnings'].includes(state.calFilter);
+      const earnings = cal_.earnings || [];
+      const days = [...new Set([...evs.map((e) => e.date), ...(showEarn ? earnings.map((e) => e.date) : [])])].sort();
+      const upcoming = days.filter((d) => d >= today), past = days.filter((d) => d < today).reverse().slice(0, 7);
+      const dayLabel = (d) => {
+        const diff = Math.round((new Date(d + 'T12:00:00') - new Date(today + 'T12:00:00')) / 86400000);
+        const base = new Date(d + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+        return diff === 0 ? `Today · ${base}` : diff === 1 ? `Tomorrow · ${base}` : diff === -1 ? `Yesterday · ${base}` : base;
+      };
+      const dayBlock = (d) => {
+        const items = state.calFilter === 'earnings' ? [] : evs.filter((e) => e.date === d);
+        const earn = showEarn ? earnings.filter((e) => e.date === d) : [];
+        if (!items.length && !earn.length) return '';
+        return `<div class="cal-day"><h3>${esc(dayLabel(d))}</h3>${items.map(eventRow).join('')}${earn.length ? earningsRow(d, earn) : ''}</div>`;
+      };
+      const sched = (cal_.fomc_schedule || []).filter((m) => m.date >= String(new Date().getFullYear()));
+      page.innerHTML = `<div class="page-head"><h1>Calendar</h1><p>Fed meetings, US & global data, big earnings, elections and market dates. Times are ET.</p></div>
+        ${fedCard()}
+        <section class="dash-card"><div class="dash-head"><h2>FOMC meetings</h2><small>● = with projections (dot plot)</small></div>
+          <div class="fomc-row">${sched.map((m) => `<span class="fomc-chip ${m.date < today ? 'past' : ''}">${esc(new Date(m.date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + (m.date.slice(0, 4) !== String(new Date().getFullYear()) ? ` ’${m.date.slice(2, 4)}` : ''))}${m.sep ? ' ●' : ''}${m.actual ? `<small>${esc(m.actual.replace(' to ', ' → '))}</small>` : ''}</span>`).join('')}</div></section>
+        <div class="seg-ctl cal-filters">${CAL_FILTERS.map(([k, l]) => `<button data-f="${k}" class="${state.calFilter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <h2 class="cal-sec">Coming up</h2>${upcoming.map(dayBlock).join('') || '<p class="fineprint">Nothing scheduled in this view.</p>'}
+        <h2 class="cal-sec">Recent results</h2>${past.map(dayBlock).join('') || '<p class="fineprint">No recent results in this view.</p>'}
+        <p class="fineprint">Sources: Federal Reserve, Nasdaq economic & earnings calendars, US Treasury. Earnings shown for companies over $20B plus the app's watchlist.${cal_.generated_at ? ` Updated ${esc(new Date(cal_.generated_at).toLocaleString())}.` : ''}</p>`;
+    };
+    draw();
+    page.addEventListener('click', (e) => {
+      const f = e.target.closest('[data-f]');
+      if (f) { state.calFilter = f.dataset.f; draw(); return; }
+      onPageClick(e);
+    });
+  }
+
   // ---------- feed routing ----------
   let observer;
   function renderFeed(focusId) {
     stopPlayer();
+    clearTimeout(pageTimer);
     observer?.disconnect();
     feedEl.innerHTML = '';
     feedEl.scrollTop = 0;
     if (state.tab === 'learn' && !state.course) return renderCourses();
     if (state.tab === 'scroll') return renderScroll();
+    if (state.tab === 'board') return renderBoard();
+    if (state.tab === 'pa') return renderPA();
+    if (state.tab === 'calendar') return renderCalendar();
     feedEl.classList.remove('free');
     state.list = buildList(state.tab);
     if (!state.list.length) {
@@ -614,7 +1022,7 @@
         ? `<img alt="" loading="lazy" decoding="async" src="${esc(bg.src)}" onerror="this.closest('.reel').classList.remove('has-media');this.remove()">`
         : '';
     const sources = reel.sources || [];
-    const segs = (reel.scenes || []).map(() => '<div class="seg"><i></i></div>').join('');
+    const segs = visibleScenes(reel).map(() => '<div class="seg"><i></i></div>').join('');
     el.innerHTML = `
       <div class="bg"><div class="blob a"></div><div class="blob b"></div><div class="grid"></div>${bgInner}</div>
       <div class="shade"></div>
@@ -939,7 +1347,7 @@
     constructor(el, reel) {
       this.el = el;
       this.reel = reel;
-      this.scenes = reel.scenes || [];
+      this.scenes = visibleScenes(reel);
       this.stage = el.querySelector('.stage');
       this.segs = [...el.querySelectorAll('.seg')];
       this.i = 0;
@@ -1123,7 +1531,7 @@
     const card = document.createElement('article');
     card.className = 'card';
     card.style.setProperty('--h', reel.hue ?? ci?.course.hue ?? cat.hue);
-    const scenes = reel.scenes || [];
+    const scenes = visibleScenes(reel);
     const PREVIEW = 3;
     const img = reel.bg?.type === 'image' ? reel.bg.src : reel.bg?.poster;
     card.innerHTML = `
@@ -1222,6 +1630,9 @@
     openSheet(`<h3>Your taste</h3>${tasteHTML()}
       <h4>Settings</h4>
       <label class="setting">Narration (voice-over)<span class="switch"><input type="checkbox" id="setSound" ${state.sound ? 'checked' : ''}><span></span></span></label>
+      <label class="setting">Experience level <select id="setLevel">
+        <option value="pro" ${state.level === 'pro' ? 'selected' : ''}>Experienced: skip the basics</option>
+        <option value="new" ${state.level === 'new' ? 'selected' : ''}>New to markets: explain everything</option></select></label>
       <label class="setting">Auto-advance to next reel<span class="switch"><input type="checkbox" id="setAuto" ${state.autoplay ? 'checked' : ''}><span></span></span></label>
       <label class="setting">Voice speed <select id="setRate">
         ${[0.9, 1, 1.05, 1.15, 1.25, 1.4].map((r) => `<option value="${r}" ${r === state.rate ? 'selected' : ''}>${r}×</option>`).join('')}</select></label>
@@ -1232,6 +1643,7 @@
       <button class="btn ghost" id="resetProgress">Reset progress (streak, XP, courses)</button>`);
     $('#setSound').onchange = (e) => setSound(e.target.checked);
     $('#setAuto').onchange = (e) => { state.autoplay = e.target.checked; store.set('autoplay', state.autoplay); };
+    $('#setLevel').onchange = (e) => { state.level = e.target.value; store.set('level', state.level); closeSheet(); renderFeed(); toast(state.level === 'pro' ? 'Experienced mode: basics hidden' : 'Beginner explainers on'); };
     $('#setRate').onchange = (e) => { state.rate = Number(e.target.value); store.set('rate', state.rate); };
     $('#copyTaste') && ($('#copyTaste').onclick = async () => {
       const p = tasteProfile();
@@ -1318,6 +1730,7 @@
     if (document.hidden) { state.player?.setPaused(true); clearTimeout(live.timer); return; }
     if ($('#sheet').hidden) state.player?.setPaused(false);
     if (state.feed && Date.now() - live.fetchedAt > Math.min(quoteInterval(), 60e3)) refreshQuotes();
+    if (['board', 'pa'].includes(state.tab)) renderFeed(); // restart the live table refresh
     if (state.feed && Date.now() - feedCheckedAt > 5 * 60e3) checkFeed(false);
   });
 

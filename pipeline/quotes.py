@@ -16,13 +16,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import ASSETS, FUTURES, GLOBAL, INDICES, SECTORS, VOLATILITY, WATCHLIST, YIELDS  # noqa: E402
+from config import ASSETS, DASHBOARD_EXTRA, FUTURES, GLOBAL, INDICES, SECTORS, VOLATILITY, WATCHLIST, YIELDS  # noqa: E402
 
 log = logging.getLogger(__name__)
 SPARK = "https://query1.finance.yahoo.com/v7/finance/spark"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"}
 OUT = Path(__file__).resolve().parent.parent / "data" / "quotes.json"
-ALL_SYMBOLS = [*INDICES, *FUTURES, *VOLATILITY, *YIELDS, *ASSETS, *GLOBAL, *SECTORS, *WATCHLIST]
+ALL_SYMBOLS = [*INDICES, *FUTURES, *VOLATILITY, *YIELDS, *ASSETS, *GLOBAL, *SECTORS, *WATCHLIST, *DASHBOARD_EXTRA]
 
 
 def fetch_live(symbols=ALL_SYMBOLS, chunk=20):
