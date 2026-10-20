@@ -1,0 +1,45 @@
+name: Refresh quotes
+
+# Keeps prices fresh on GitHub Pages: every ~15 minutes in US market hours it fetches the latest
+# quotes into data/quotes.json and redeploys, without committing (so git history stays clean).
+# On Vercel this isn't needed: api/quotes.js serves live prices, so set the repo variable HOSTING=vercel.
+# GitHub may start scheduled runs a few minutes late; the app shows each price's "as of" time.
+on:
+  schedule:
+    # UTC. Pre-market (hourly), then every 15 minutes through the close and after-hours, weekdays.
+    - cron: "0 9-12 * * 1-5"
+    - cron: "*/15 13-21 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: quotes
+  cancel-in-progress: true
+
+jobs:
+  quotes:
+    if: vars.HOSTING != 'vercel'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch latest quotes (standard library only, nothing to install)
+        run: python pipeline/quotes.py
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

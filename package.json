@@ -1,0 +1,6 @@
+{
+  "name": "marketreels",
+  "private": true,
+  "type": "module",
+  "description": "Static site. The only server code is api/quotes.js (optional, Vercel) and it has no dependencies."
+}

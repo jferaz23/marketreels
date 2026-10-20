@@ -1,0 +1,90 @@
+name: Update feed
+
+# Builds fresh reels from free market data and news, commits data/feed.json + data/quotes.json,
+# and deploys to GitHub Pages. Uses no paid services.
+# Vercel users: Vercel redeploys on its own whenever this workflow pushes the new feed.
+on:
+  schedule:
+    # Times are UTC. Weekdays: pre-market, midday, after the close (US Eastern, daylight time).
+    - cron: "30 12 * * 1-5"
+    - cron: "0 17 * * 1-5"
+    - cron: "20 21 * * 1-5"
+    # Saturday morning week-in-review.
+    - cron: "0 14 * * 6"
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "Force a slot (premarket, midday, close, weekend). Blank = auto."
+        required: false
+  push:
+    branches: [main]
+    paths-ignore: ["data/feed.json", "data/quotes.json", "README.md"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: feed
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - name: Install pipeline dependencies
+        if: github.event_name != 'push'
+        run: pip install -r pipeline/requirements.txt
+
+      - name: Build reels
+        if: github.event_name != 'push'
+        env:
+          # Optional free key for stock-video backgrounds.
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: |
+          if [ -n "${{ github.event.inputs.slot }}" ]; then
+            python pipeline/build_feed.py --slot "${{ github.event.inputs.slot }}"
+          else
+            python pipeline/build_feed.py
+          fi
+
+      - name: Commit feed
+        if: github.event_name != 'push'
+        run: |
+          git config user.name "marketreels-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/feed.json data/quotes.json
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Update feed $(date -u +'%Y-%m-%d %H:%M') UTC"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push
+          fi
+
+      - name: Package site for GitHub Pages
+        if: vars.HOSTING != 'vercel'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    # Set the repository variable HOSTING=vercel to skip GitHub Pages entirely.
+    if: vars.HOSTING != 'vercel'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

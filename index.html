@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>MarketReels</title>
+  <meta name="description" content="Swipeable, bite-sized reels on the US stock market, the economy and stock ideas.">
+  <meta name="theme-color" content="#07090d">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MarketReels">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="topbar-row">
+        <div class="logo">Market<span>Reels</span></div>
+        <div class="xp" id="xp" role="button" title="Your progress & taste"></div>
+      </div>
+      <nav class="tabs" id="tabs" aria-label="Feeds"></nav>
+      <div class="tape" id="tape">
+        <button class="live-pill off" id="livePill" title="Tap to refresh prices"><i></i><span>Prices</span></button>
+        <div class="tape-track" id="tapeTrack" aria-hidden="true"></div>
+      </div>
+    </header>
+    <button class="new-pill" id="newPill" hidden>✨ New reels · tap to load</button>
+    <div class="ptr" id="ptr" aria-hidden="true">↓ Pull to refresh</div>
+
+    <main id="feed" aria-live="polite"></main>
+
+    <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+    <section class="sheet" id="sheet" aria-modal="true" role="dialog" hidden>
+      <div class="sheet-grip"></div>
+      <div id="sheetBody"></div>
+    </section>
+
+    <div class="toast" id="toast" role="status"></div>
+
+    <div class="onboard" id="onboard" hidden>
+      <div class="onboard-card">
+        <div class="logo big">Market<span>Reels</span></div>
+        <p class="onboard-sub">Learn the market in 60-second swipes.</p>
+        <ul class="gestures">
+          <li><span>↕</span> Swipe up for the next reel</li>
+          <li><span>⇥</span> Tap the right side to skip ahead, left to go back</li>
+          <li><span>✋</span> Press and hold to pause</li>
+          <li><span>🔊</span> Turn on narration to listen hands-free</li>
+        </ul>
+        <button class="btn primary" id="startSound">Start with narration 🔊</button>
+        <button class="btn ghost" id="startMuted">Start muted</button>
+        <p class="fineprint">Educational content only. Not financial advice.</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>
