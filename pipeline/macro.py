@@ -28,13 +28,13 @@ SERIES = {
 
 def _series(sid, start):
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={sid}&cosd={start}"
-    for attempt in range(3):
+    for attempt in range(2):  # short: the BLS API is the backup when FRED is slow
         try:
-            r = requests.get(url, headers=UA, timeout=45)
+            r = requests.get(url, headers=UA, timeout=20)
             r.raise_for_status()
             break
         except requests.RequestException as e:
-            if attempt == 2:
+            if attempt == 1:
                 raise
             log.info("FRED %s attempt %d failed (%s); retrying", sid, attempt + 1, e)
             time.sleep(5 * (attempt + 1))
