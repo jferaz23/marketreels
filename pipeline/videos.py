@@ -81,7 +81,8 @@ def fetch_videos(limit=36):
             continue
         for e in entries:
             vid, title = e.get("yt_videoid"), (e.get("title") or "").strip()
-            if not vid or vid in seen or SKIP_TITLE.search(title):
+            # "Topic A; Topic B; Topic C" titles are full-length shows, not clips.
+            if not vid or vid in seen or SKIP_TITLE.search(title) or title.count(";") >= 2:
                 continue
             ts = e.get("published_parsed")
             age_h = (now - time.mktime(ts) + time.timezone) / 3600 if ts else 99
