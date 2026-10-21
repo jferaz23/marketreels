@@ -1,0 +1,49 @@
+name: Stock alerts
+
+# Free phone alerts for big moves in your PA stocks, via the ntfy app (no account needed).
+# Setup: add the secret NTFY_TOPIC and the variable PA_TICKERS (e.g. AAPL,NVDA). Optional variables:
+# ALERT_PCT (default 3) and APP_URL. See pipeline/alerts.py. GitHub may start scheduled runs a few minutes late.
+on:
+  schedule:
+    # UTC; covers 9:30 am-4:00 pm ET in both daylight and standard time.
+    - cron: "*/10 13-21 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alerts
+  cancel-in-progress: true
+
+jobs:
+  alerts:
+    if: vars.PA_TICKERS != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Remembers which alerts already went out today, so each move notifies once.
+      - uses: actions/cache/restore@v6
+        with:
+          path: .alert-state
+          key: alerts-${{ github.run_id }}
+          restore-keys: alerts-
+
+      - name: Check PA stocks (standard library only)
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          PA_TICKERS: ${{ vars.PA_TICKERS }}
+          ALERT_PCT: ${{ vars.ALERT_PCT }}
+          APP_URL: ${{ vars.APP_URL }}
+        run: python pipeline/alerts.py
+
+      - uses: actions/cache/save@v6
+        if: always()
+        with:
+          path: .alert-state
+          key: alerts-${{ github.run_id }}

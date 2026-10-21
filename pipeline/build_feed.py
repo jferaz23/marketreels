@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import calendar_events  # noqa: E402
+from fed_odds import fed_odds  # noqa: E402
 from config import ASSETS, INDICES, VOLATILITY, WATCHLIST  # noqa: E402
 from macro import fetch_macro  # noqa: E402
 from market import fetch_fundamentals, fetch_quotes  # noqa: E402
@@ -105,8 +106,17 @@ def main():
         calendar = json.loads(calendar_events.OUT.read_text(encoding="utf-8")) if calendar_events.OUT.exists() else {}
     curve = json.loads(calendar_events.CURVE_OUT.read_text(encoding="utf-8")) if calendar_events.CURVE_OUT.exists() else {}
 
+    odds = []
+    try:
+        upcoming = [m["date"] for m in calendar.get("fomc_schedule", []) if m["date"] >= today.isoformat()]
+        top = ((calendar.get("fed") or {}).get("last") or {}).get("result", {}).get("high")
+        if upcoming and top:
+            odds = fed_odds(upcoming, {s: v["price"] for s, v in live_quotes.items() if s.startswith("ZQ")}, top)
+    except Exception as e:
+        log.warning("fed odds failed: %s", e)
+
     ctx = {"date": today.isoformat(), "slot": slot, "ts": now.isoformat(timespec="seconds"), "quotes": quotes,
-           "news": news, "macro": macro, "lesson_titles": lesson_titles, "calendar": calendar, "curve": curve}
+           "news": news, "macro": macro, "lesson_titles": lesson_titles, "calendar": calendar, "curve": curve, "fed_odds": odds}
 
     spot_syms = pick_spotlights(quotes, today, 2)
     fundamentals = {}

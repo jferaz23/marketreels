@@ -649,10 +649,22 @@ class ReelWriter:
                     {"label": "Core CPI", "value": f"{macro['core_yoy'][1]:.1f}%" if macro.get("core_yoy") else "—", "note": "year over year"}]},
                 {"kind": "bullets", "headline": "Data the Fed has seen since its last meeting",
                  "items": [f"{nice_date(e['date']).split(',')[1].strip()} · " + self._event_line({**e, "time": None}) for e in recent[-5:]]} if recent else None,
+                self.odds_scene(nxt["date"]),
                 {"kind": "text", "headline": "Read the 2-year", "body": read},
             ]
             self.add("fed-watch", "macro", "Fed Watch", scenes[0]["headline"], scenes, 1, art="fed",
                      sources=[{"title": "Federal Reserve: FOMC calendar", "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"}])
+
+    def odds_scene(self, meeting):
+        odds = self.ctx.get("fed_odds") or []
+        o = next((x for x in odds if x["date"] == meeting), None)
+        if not o:
+            return None
+        items = [{"label": label, "value": round(o[key] * 100, 1), "display": f"{o[key] * 100:.0f}%"}
+                 for key, label in (("cut", "Cut"), ("hold", "Hold"), ("hike", "Hike")) if o[key] >= 0.005]
+        path = " → ".join(f"{nice_date(x['date']).split(',')[1].strip()}: {x['post']:.2f}%" for x in odds[:4])
+        return {"kind": "bars", "headline": "What futures are pricing", "mode": "positive", "items": items,
+                "body": f"From 30-day fed funds futures, CME FedWatch-style. Implied effective rate after each meeting: {path}."}
 
     def week_ahead(self):
         cal_ = self.ctx.get("calendar") or {}

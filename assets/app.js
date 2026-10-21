@@ -55,6 +55,9 @@
     xp: store.get('xp', 0),
     level: store.get('level', 'pro'), // 'pro' = experienced (skips beginner explainers), 'new' = everything
     pa: store.get('pa', []), // [{sym, shares, cost, added}]
+    alertPct: store.get('alertPct', 3),
+    alertNotify: store.get('alertNotify', false),
+    alertLog: store.get('alertLog', []),
     paSort: store.get('paSort', 'move'),
     calFilter: 'all',
     calendar: null,
@@ -183,6 +186,8 @@
     renderTabs();
     renderStats();
     const deep = location.hash.match(/r=([^&]+)/);
+    const tabLink = location.hash.match(/^#(board|pa|calendar)$/); // e.g. alert notifications open #pa
+    if (tabLink) setTab(tabLink[1], false);
     if (deep) {
       const id = decodeURIComponent(deep[1]);
       if (!buildList(state.tab).some((r) => r.id === id)) setTab('foryou', false);
@@ -383,6 +388,7 @@
   function collectSymbols() {
     const s = new Set();
     (state.feed?.tape || []).forEach((t) => t.sym && s.add(t.sym));
+    state.pa.forEach((h) => s.add(h.sym));
     (state.feed?.reels || []).forEach((r) => {
       if (r.ticker) s.add(r.ticker);
       (r.scenes || []).forEach((sc) => { if (sc.sym) s.add(sc.sym); (sc.items || []).forEach((i) => i.sym && s.add(i.sym)); });
@@ -421,6 +427,7 @@
         live.generatedAt = Date.parse(data.generated_at) || Date.now();
         renderTape(state.feed?.tape || []);
         document.querySelectorAll('[data-sym]').forEach(paintLive);
+        checkAlerts();
         if (manual) toast(`Prices updated · ${liveStatus().text}`);
       } else if (manual) toast('Offline: showing saved prices');
     } finally {
@@ -572,6 +579,7 @@
       got = Object.fromEntries(symbols.filter((s) => live.quotes[s]).map((s) => [s, live.quotes[s]]));
     }
     Object.assign(pageQuotes, got);
+    checkAlerts();
     // Keep the tape and reels in sync with the fresher prices.
     for (const [s, q] of Object.entries(got)) live.quotes[s] = { ...live.quotes[s], ...q };
     renderLiveStatus();
@@ -614,7 +622,7 @@
         <div><small>Target range</small><b>${res ? `${res.low.toFixed(2)}–${res.high.toFixed(2)}%` : '—'}</b></div>
         <div><small>Last move</small><b>${last ? esc((last.actual || '').split(' to ')[0]) : '—'}</b><em>${last ? esc(relDate(last.date)) : ''}</em></div>
         <div><small>Next decision</small><b>${nxt ? esc(new Date(nxt.date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })) : '—'}</b><em>${days != null ? (days <= 0 ? 'today, 2:00 pm ET' : `in ${days} day${days === 1 ? '' : 's'}`) : ''}</em></div>
-      </div></section>`;
+      </div>${oddsLine()}</section>`;
   }
 
   function curveCard() {
@@ -661,7 +669,7 @@
     if (Object.keys(pageQuotes).length) draw();
     else page.innerHTML = '<div class="loading"><div><div class="spinner"></div>Loading markets…</div></div>';
     const tick = async () => {
-      await Promise.all([fetchPageQuotes(BOARD.flatMap((s) => s.rows.map((r) => r[0]))), loadSideData()]);
+      await Promise.all([fetchPageQuotes([...BOARD.flatMap((s) => s.rows.map((r) => r[0])), ...zqSymbols()]), loadSideData()]);
       const y = feedEl.scrollTop;
       draw();
       feedEl.scrollTop = y;
@@ -672,7 +680,7 @@
   }
 
   // ---------- PA: personal stocks ----------
-  const paSave = () => store.set('pa', state.pa);
+  const paSave = () => { store.set('pa', state.pa); live.symbols = collectSymbols().join(','); };
 
   function paTotals() {
     let value = 0, day = 0, cost = 0, hasShares = false, up = 0, down = 0;
@@ -726,7 +734,9 @@
             const pos = h.shares && q ? ` · ${h.shares} sh · $${Math.round(h.shares * q.price).toLocaleString('en-US')}${q.prev != null ? ` · <span class="${dirClass(q.chg)}">${signedNum(h.shares * (q.price - q.prev), 0)}</span>` : ''}` : '';
             const earn = e ? ` · <span class="earn-badge">Earnings ${esc(new Date(e.date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))}</span>` : '';
             return quoteRow(h.sym, q?.name || h.sym, '', pos + earn);
-          }).join('')}</section>` : ''}`;
+          }).join('')}</section>` : ''}
+        ${state.pa.length ? alertsCard() : ''}`;
+      wireAlertsCard(page);
       page.appendChild(newsBox);
     };
     const loadNews = async () => {
@@ -875,6 +885,7 @@
     page.innerHTML = '<div class="loading"><div><div class="spinner"></div>Loading calendar…</div></div>';
     feedEl.appendChild(page);
     await loadSideData();
+    await fetchPageQuotes(zqSymbols());
     const draw = () => {
       const cal_ = state.calendar || {};
       const today = todayKey();
@@ -897,6 +908,7 @@
       const sched = (cal_.fomc_schedule || []).filter((m) => m.date >= String(new Date().getFullYear()));
       page.innerHTML = `<div class="page-head"><h1>Calendar</h1><p>Fed meetings, US & global data, big earnings, elections and market dates. Times are ET.</p></div>
         ${fedCard()}
+        ${oddsCard()}
         <section class="dash-card"><div class="dash-head"><h2>FOMC meetings</h2><small>● = with projections (dot plot)</small></div>
           <div class="fomc-row">${sched.map((m) => `<span class="fomc-chip ${m.date < today ? 'past' : ''}">${esc(new Date(m.date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + (m.date.slice(0, 4) !== String(new Date().getFullYear()) ? ` ’${m.date.slice(2, 4)}` : ''))}${m.sep ? ' ●' : ''}${m.actual ? `<small>${esc(m.actual.replace(' to ', ' → '))}</small>` : ''}</span>`).join('')}</div></section>
         <div class="seg-ctl cal-filters">${CAL_FILTERS.map(([k, l]) => `<button data-f="${k}" class="${state.calFilter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
@@ -909,6 +921,170 @@
       const f = e.target.closest('[data-f]');
       if (f) { state.calFilter = f.dataset.f; draw(); return; }
       onPageClick(e);
+    });
+  }
+
+  // ---------- Fed rate odds (from 30-day fed funds futures) ----------
+  // Same math as pipeline/fed_odds.py: each ZQ contract = 100 - average effective fed funds rate for its month.
+  const ZQ_CODES = 'FGHJKMNQUVXZ';
+  const zqSymbol = (y, m) => `ZQ${ZQ_CODES[m - 1]}${String(y).slice(2)}.CBT`;
+  function zqSymbols(months = 10) {
+    const out = [];
+    let y = new Date().getFullYear(), m = new Date().getMonth() + 1;
+    for (let i = 0; i < months; i++) { out.push(zqSymbol(y, m)); if (++m > 12) { m = 1; y++; } }
+    return out;
+  }
+
+  function fedOdds() {
+    const cal_ = state.calendar || {};
+    const top = cal_.fed?.last?.result?.high;
+    const today = todayKey();
+    const meetings = (cal_.fomc_schedule || []).filter((m) => m.date >= today);
+    if (top == null || !meetings.length) return [];
+    const px = (s) => (pageQuotes[s] || live.quotes[s])?.price;
+    const avg = (y, m) => { const p = px(zqSymbol(y, m)); return p ? 100 - p : null; };
+    const shift = (y, m, k) => { const t = y * 12 + (m - 1) + k; return [Math.floor(t / 12), (t % 12) + 1]; };
+    const meetMonths = new Set(meetings.map((x) => x.date.slice(0, 7)));
+    const key = ([y, m]) => `${y}-${String(m).padStart(2, '0')}`;
+    const out = [];
+    let prevPost = null;
+    for (const mt of meetings) {
+      const [y, m, d] = mt.date.split('-').map(Number);
+      const n = new Date(y, m, 0).getDate();
+      const a = avg(y, m);
+      if (a == null) break;
+      const nxt = shift(y, m, 1), prv = shift(y, m, -1);
+      const nextFree = !meetMonths.has(key(nxt)) && avg(...nxt) != null;
+      const prevFree = !meetMonths.has(key(prv)) && avg(...prv) != null;
+      const after = n - d;
+      let pre, post;
+      if (nextFree && (after < 1 || prevPost == null || !prevFree)) { post = avg(...nxt); pre = (a * n - post * after) / d; }
+      else if (prevFree && after >= 1) { pre = avg(...prv); post = (a * n - pre * d) / after; }
+      else if (prevPost != null && after >= 1) { pre = prevPost; post = (a * n - pre * d) / after; }
+      else break;
+      out.push({ date: mt.date, sep: mt.sep, pre, post, change: (post - pre) * 100 });
+      prevPost = post;
+    }
+    let dist = new Map([[Math.round(top * 100), 1]]);
+    for (const o of out) {
+      const steps = o.change / 25, k = Math.floor(steps), p = steps - k;
+      const moves = [[25 * k, 1 - p], [25 * (k + 1), p]].filter(([, pr]) => pr > 1e-6);
+      const nd = new Map();
+      for (const [lvl, pr] of dist) for (const [bp, mp] of moves) nd.set(lvl + bp, (nd.get(lvl + bp) || 0) + pr * mp);
+      dist = nd;
+      o.hold = moves.filter(([bp]) => bp === 0).reduce((s, [, pr]) => s + pr, 0);
+      o.hike = moves.filter(([bp]) => bp > 0).reduce((s, [, pr]) => s + pr, 0);
+      o.cut = moves.filter(([bp]) => bp < 0).reduce((s, [, pr]) => s + pr, 0);
+      o.dist = [...dist].filter(([, pr]) => pr >= 0.005).sort((x, y2) => x[0] - y2[0]);
+      o.likely = o.dist.reduce((best, cur) => (cur[1] > best[1] ? cur : best), [0, 0]);
+    }
+    return out;
+  }
+
+  const oddsText = (o) => [['Hold', o.hold], ['Hike', o.hike], ['Cut', o.cut]].filter(([, p]) => p >= 0.005)
+    .sort((a, b) => b[1] - a[1]).map(([l, p]) => `${l} ${Math.round(p * 100)}%`).join(' · ');
+  const rangeOf = (topBp) => `${((topBp - 25) / 100).toFixed(2)}–${(topBp / 100).toFixed(2)}%`;
+  const shortDate = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + (iso.slice(0, 4) !== String(new Date().getFullYear()) ? ` ’${iso.slice(2, 4)}` : '');
+
+  function oddsLine() {
+    const odds = fedOdds();
+    if (!odds.length) return '';
+    const o = odds[0], last = odds[Math.min(odds.length - 1, 5)];
+    const nowTop = state.calendar.fed.last.result.high * 100;
+    return `<div class="odds-line"><b>Futures odds, ${esc(shortDate(o.date))}:</b> ${esc(oddsText(o))}
+      <span>Priced by ${esc(shortDate(last.date))}: ${esc(rangeOf(last.likely[0]))} most likely (${signedNum(last.likely[0] - nowTop, 0)} bp)</span></div>`;
+  }
+
+  function oddsCard() {
+    const odds = fedOdds().slice(0, 6);
+    if (!odds.length) return '';
+    const effr = state.calendar?.fed?.effr;
+    const W = 320, H = 90, rates = [odds[0].pre, ...odds.map((o) => o.post)];
+    const min = Math.min(...rates) - 0.05, max = Math.max(...rates) + 0.05;
+    const x = (i) => 14 + (i / (rates.length - 1)) * (W - 28), y = (v) => 8 + (1 - (v - min) / (max - min)) * (H - 26);
+    const labels = ['Now', ...odds.map((o) => shortDate(o.date))];
+    return `<section class="dash-card"><div class="dash-head"><h2>Rate odds</h2><small>from fed funds futures</small></div>
+      <div class="odds-table">${odds.map((o) => `<div class="odds-row">
+        <span class="odds-date">${esc(shortDate(o.date))}${o.sep ? ' ●' : ''}</span>
+        <span class="odds-bar">${o.cut >= 0.005 ? `<i class="cut" style="width:${o.cut * 100}%">${o.cut >= 0.12 ? Math.round(o.cut * 100) + '%' : ''}</i>` : ''}<i class="hold" style="width:${o.hold * 100}%">${o.hold >= 0.12 ? Math.round(o.hold * 100) + '%' : ''}</i>${o.hike >= 0.005 ? `<i class="hike" style="width:${o.hike * 100}%">${o.hike >= 0.12 ? Math.round(o.hike * 100) + '%' : ''}</i>` : ''}</span>
+        <span class="odds-likely">${esc(rangeOf(o.likely[0]))}<small>${Math.round(o.likely[1] * 100)}% likely</small></span></div>`).join('')}</div>
+      <div class="curve-legend"><span><i class="lg cut"></i>Cut</span><span><i class="lg hold"></i>Hold</span><span><i class="lg hike"></i>Hike</span><span>● = projections</span></div>
+      <svg class="curve" viewBox="0 0 ${W} ${H}"><path class="curve-now" d="${rates.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join('')}"/>
+        ${rates.map((v, i) => `<circle class="curve-dot" cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.6"/><text x="${x(i).toFixed(1)}" y="${H - 3}" text-anchor="middle">${esc(labels[i])}</text>`).join('')}</svg>
+      <p class="fineprint">Implied effective fed funds rate after each meeting, ${rates[0].toFixed(2)}% → ${rates[rates.length - 1].toFixed(2)}%.${effr ? ` Current EFFR ${effr.rate.toFixed(2)}% (NY Fed, ${esc(relDate(effr.date))}).` : ''} Method: CME FedWatch-style, using CBOT 30-day fed funds futures from Yahoo Finance; an estimate, not a forecast.</p></section>`;
+  }
+
+  // ---------- PA move alerts ----------
+  // In-app: checked on every price refresh while the app is open (banner + optional system notification).
+  // App closed: GitHub Actions + the free ntfy app (pipeline/alerts.py), set up from the PA tab.
+  const alertState = () => {
+    const s = store.get('alertSent', {});
+    return s.date === todayKey() ? s : { date: todayKey(), sent: {} };
+  };
+
+  function checkAlerts() {
+    if (!state.pa.length) return;
+    const step = state.alertPct;
+    const st = alertState();
+    const fresh = [];
+    for (const h of state.pa) {
+      const q = pageQuotes[h.sym] || live.quotes[h.sym];
+      if (!q || q.chg == null || !q.time || etDate(q.time) !== etDate(Date.now() / 1000)) continue;
+      const level = Math.floor(Math.abs(q.chg) / step);
+      const k = `${h.sym}:${q.chg > 0 ? 'up' : 'down'}`;
+      if (level < 1 || level <= (st.sent[k] || 0)) continue;
+      st.sent[k] = level;
+      fresh.push({ sym: h.sym, chg: q.chg, price: q.price, t: Date.now() });
+    }
+    if (!fresh.length) return;
+    store.set('alertSent', st);
+    state.alertLog = [...fresh, ...state.alertLog].slice(0, 30);
+    store.set('alertLog', state.alertLog);
+    const a = fresh[0];
+    toast(`🚨 ${a.sym} ${pct(a.chg, 1)} today${fresh.length > 1 ? ` (+${fresh.length - 1} more)` : ''}`);
+    if (state.alertNotify && 'Notification' in window && Notification.permission === 'granted') {
+      navigator.serviceWorker?.ready.then((reg) => fresh.forEach((x) => reg.showNotification(`${x.sym} ${pct(x.chg, 1)} today`, {
+        body: `${x.sym} is at ${fmtLive('usd', x.price)}, ${pct(x.chg)} from yesterday's close.`, icon: 'assets/icons/icon-192.png', tag: x.sym,
+      }))).catch(() => {});
+    }
+  }
+
+  function alertsCard() {
+    const today = (state.alertLog || []).filter((a) => new Date(a.t).toDateString() === new Date().toDateString());
+    return `<section class="dash-card"><div class="dash-head"><h2>Alerts</h2><small>big moves in your PA stocks</small></div>
+      <label class="setting">Alert when a stock moves <select id="alertPct">${[2, 3, 5, 7, 10].map((v) => `<option value="${v}" ${v === state.alertPct ? 'selected' : ''}>±${v}%</option>`).join('')}</select></label>
+      <label class="setting">Notifications while the app is open<span class="switch"><input type="checkbox" id="alertNotify" ${state.alertNotify ? 'checked' : ''}><span></span></span></label>
+      <button class="btn ghost" id="alertPhone">Get alerts when the app is closed (free) →</button>
+      ${today.length ? `<h4 class="alert-h">Today</h4><ul class="alert-log">${today.map((a) => `<li><b>${esc(a.sym)}</b> <span class="${dirClass(a.chg)}">${pct(a.chg, 1)}</span> at ${esc(fmtLive('usd', a.price))}<small>${esc(new Date(a.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}</small></li>`).join('')}</ul>` : ''}</section>`;
+  }
+
+  function wireAlertsCard(root) {
+    root.querySelector('#alertPct')?.addEventListener('change', (e) => { state.alertPct = Number(e.target.value); store.set('alertPct', state.alertPct); toast(`Alerts at ±${state.alertPct}%`); });
+    root.querySelector('#alertNotify')?.addEventListener('change', async (e) => {
+      if (e.target.checked && 'Notification' in window) {
+        const perm = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
+        if (perm !== 'granted') { e.target.checked = false; toast(Notification.permission === 'denied' ? 'Notifications are blocked in your settings' : 'Notifications not allowed'); return; }
+      } else if (e.target.checked) { e.target.checked = false; toast('This browser has no notifications; add the app to your home screen first'); return; }
+      state.alertNotify = e.target.checked;
+      store.set('alertNotify', state.alertNotify);
+    });
+    root.querySelector('#alertPhone')?.addEventListener('click', openPhoneAlerts);
+  }
+
+  function openPhoneAlerts() {
+    const tickers = state.pa.map((h) => h.sym).join(',');
+    openSheet(`<h3>Phone alerts when the app is closed</h3>
+      <p>Free, using the <b>ntfy</b> app (no account). GitHub checks your stocks every ~10 minutes in market hours and sends a push when one moves past the <code>ALERT_PCT</code> size (3% unless you change it), then again at each further step.</p>
+      <ol class="steps">
+        <li>Install <b>ntfy</b> from the App Store or Google Play.</li>
+        <li>In ntfy tap <b>+</b> and subscribe to your private topic. Claude gave you the topic name in chat; it's also the <code>NTFY_TOPIC</code> secret in your GitHub repo.</li>
+        <li>Tell GitHub which stocks to watch: copy your list, then paste it as the <code>PA_TICKERS</code> variable.</li>
+      </ol>
+      <button class="btn primary" id="copyTickers" ${tickers ? '' : 'disabled'}>${tickers ? `Copy my tickers (${esc(tickers)})` : 'Add stocks to PA first'}</button>
+      <a class="btn ghost" href="https://github.com/jferaz23/marketreels/settings/variables/actions" target="_blank" rel="noopener">Open GitHub variables →</a>
+      <p class="fineprint">Phone alerts use the GitHub settings, separate from the in-app alert size above. Your list on GitHub only changes when you paste it there.</p>`);
+    $('#copyTickers')?.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(tickers); toast('Tickers copied 📋'); } catch { toast(tickers); }
     });
   }
 

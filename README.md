@@ -20,6 +20,15 @@ On every reel and card:
 - **Ask**: opens Claude with the reel and your question filled in (see below). Free.
 - Daily goal (5 reels), day streak 🔥 and XP ⚡ from quizzes.
 
+**Fed rate odds** (Dashboard + Calendar): market-implied probabilities of a cut, hold or hike at each upcoming FOMC meeting, plus the implied rate path. Computed CME FedWatch-style from CBOT 30-day fed funds futures (live), anchored on the NY Fed's effective fed funds rate. See `pipeline/fed_odds.py`.
+
+**Alerts** (PA tab): get alerted when one of your stocks moves ±3% (adjustable) or more, and again at each further step.
+- *App open:* a banner, plus an optional system notification.
+- *App closed:* free push notifications through the **ntfy** app. The *Stock alerts* workflow checks every ~10 minutes in market hours. Setup:
+  1. Install ntfy and subscribe to the topic stored in the `NTFY_TOPIC` secret.
+  2. Set the repository variable `PA_TICKERS` (e.g. `AAPL,NVDA`). The PA tab has a *Copy my tickers* button.
+  3. Optional: `ALERT_PCT` (default 3) and `APP_URL` (the page a notification opens).
+
 **Experience level** (Settings): *Experienced* (default) leads with market updates, skips beginner explainer scenes and shows a lesson only every ~6 reels. *New to markets* explains everything.
 
 ## Live prices

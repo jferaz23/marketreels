@@ -344,6 +344,11 @@ def treasury_curve(today):
             "month_ago": {"date": fmt(month["Date"]), "points": pts(month)}}
 
 
+def effr():
+    r = _get("https://markets.newyorkfed.org/api/rates/unsecured/effr/last/1.json").json()["refRates"][0]
+    return {"date": r["effectiveDate"], "rate": r["percentRate"], "low": r.get("targetRateFrom"), "high": r.get("targetRateTo")}
+
+
 def build(today):
     """Fetch everything; keep previous data for any source that fails. Returns the calendar dict."""
     prev = {}
@@ -369,6 +374,12 @@ def build(today):
     if not earnings:
         earnings = prev.get("earnings", [])
 
+    try:
+        fed = {**fed, "effr": effr()}
+    except Exception as e:
+        log.warning("EFFR unavailable: %s", e)
+        if prev.get("fed", {}).get("effr"):
+            fed = {**fed, "effr": prev["fed"]["effr"]}
     events = [e for e in fomc if lo.isoformat() <= e["date"] <= (today + timedelta(days=120)).isoformat()]
     events += econ + market_dates(lo, today + timedelta(days=60))
     events += [{**e} for e in FIXED_EVENTS if lo.isoformat() <= e["date"] <= (today + timedelta(days=400)).isoformat()]
