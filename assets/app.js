@@ -9,9 +9,11 @@
     news: { label: 'News', hue: 32 },
     ideas: { label: 'Ideas', hue: 150 },
     learn: { label: 'Learn', hue: 188 },
+    video: { label: 'Video', hue: 350 },
   };
   const TABS = [
     { id: 'foryou', label: 'For You' },
+    { id: 'watch', label: 'Watch' },
     { id: 'board', label: 'Dashboard' },
     { id: 'pa', label: 'PA' },
     { id: 'calendar', label: 'Calendar' },
@@ -61,6 +63,7 @@
     paSort: store.get('paSort', 'move'),
     calFilter: 'all',
     calendar: null,
+    videos: [],
     curve: null,
     player: null,
   };
@@ -174,7 +177,8 @@
 
   async function load() {
     feedEl.innerHTML = '<div class="loading"><div><div class="spinner"></div>Loading reels…</div></div>';
-    const [feed, lessons] = await Promise.allSettled([fetchJSON('data/feed.json'), fetchJSON('data/lessons.json')]);
+    const [feed, lessons, videos] = await Promise.allSettled([fetchJSON('data/feed.json'), fetchJSON('data/lessons.json'), fetchJSON('data/videos.json')]);
+    state.videos = videos.status === 'fulfilled' ? (videos.value.reels || []).filter((r) => r.video) : [];
     state.feed = feed.status === 'fulfilled' ? feed.value : { reels: [], tape: [] };
     state.lessons = lessons.status === 'fulfilled' ? (lessons.value.reels || []) : [];
     state.courses = lessons.status === 'fulfilled' ? (lessons.value.courses || []) : [];
@@ -217,24 +221,29 @@
   }
 
   function personalMix() {
-    // Daily reels ranked by freshness and your ratings, with lessons woven in.
+    // Real video clips first, with data reels (real numbers) between them and an occasional lesson.
     const profile = tasteProfile();
-    const daily = (state.feed?.reels || []).filter((r) => !disliked(r));
-    const ranked = daily
+    const pro = state.level === 'pro';
+    const data = (state.feed?.reels || [])
+      .filter((r) => !disliked(r) && !(pro && /-news-/.test(r.id))) // template news stories: News tab only
       .map((r, i) => ({ r, k: i + (state.seen.has(r.id) ? 40 : 0) - prefScore(r, profile) * 12 }))
       .sort((a, b) => a.k - b.k)
       .map((x) => x.r);
-    const learnPref = profile.cat.learn ? profile.cat.learn.sum / (profile.cat.learn.n + 2) : 0;
-    // Experienced readers get market updates first, with a lesson only every ~6 reels.
-    const every = state.level === 'pro' ? Math.max(4, Math.round(6 - learnPref * 2)) : Math.max(2, Math.min(5, Math.round(3 - learnPref * 2)));
+    const vids = rankVideos();
     const lessons = orderedLessons().filter((r) => !disliked(r));
+    const learnPref = profile.cat.learn ? profile.cat.learn.sum / (profile.cat.learn.n + 2) : 0;
+    const every = pro ? Math.max(6, Math.round(9 - learnPref * 3)) : Math.max(3, Math.round(4 - learnPref * 2));
+    const pattern = vids.length ? (pro ? ['v', 'v', 'd'] : ['d', 'v']) : ['d'];
     const out = [];
-    let li = 0;
-    ranked.forEach((r, i) => {
-      out.push(r);
-      if ((i + 1) % every === 0 && li < lessons.length) out.push(lessons[li++]);
-    });
-    while (li < lessons.length && out.length < 70) out.push(lessons[li++]);
+    let vi = 0, di = 0, li = 0, step = 0;
+    while ((vi < vids.length || di < data.length) && out.length < 90) {
+      const want = pattern[step++ % pattern.length];
+      if (want === 'v' && vi < vids.length) out.push(vids[vi++]);
+      else if (di < data.length) out.push(data[di++]);
+      else out.push(vids[vi++]);
+      if (out.length % every === 0 && li < lessons.length) out.push(lessons[li++]);
+    }
+    while (li < lessons.length && out.length < 90) out.push(lessons[li++]);
     return out;
   }
 
@@ -245,6 +254,7 @@
       return c ? c.lessons.map((id) => state.lessons.find((l) => l.id === id)).filter(Boolean) : [];
     }
     if (tab === 'foryou' || tab === 'scroll') return personalMix();
+    if (tab === 'watch') return rankVideos();
     return (state.feed?.reels || []).filter((r) => r.category === tab && !disliked(r));
   }
 
@@ -1194,6 +1204,7 @@
   }
 
   function reelShell(reel, idx) {
+    if (reel.kind === 'video') return videoShell(reel, idx);
     const cat = CATEGORIES[reel.category] || CATEGORIES.news;
     const ci = courseInfo(reel);
     const el = document.createElement('section');
@@ -1312,7 +1323,8 @@
       b.classList.toggle('on', on);
       b.querySelector('.ic').innerHTML = on ? ICONS.soundOn : ICONS.soundOff;
     });
-    toast(on ? 'Narration on 🔊' : 'Narration off');
+    if (state.player instanceof VideoPlayer) state.player.applySound();
+    toast(on ? 'Sound on 🔊' : 'Sound off');
   }
 
   // ---------- media ----------
@@ -1629,13 +1641,183 @@
     stopPlayer();
     if (!el._reel) return;
     prepareMedia(el);
-    state.player = new Player(el, el._reel);
+    state.player = el._reel.kind === 'video' ? new VideoPlayer(el, el._reel) : new Player(el, el._reel);
     state.player.start();
   }
 
   function stopPlayer() {
     state.player?.stop();
     state.player = null;
+  }
+
+  // ---------- Video reels (real clips from news outlets' YouTube channels) ----------
+  // Played in YouTube's embedded player (privacy-enhanced domain). A transparent layer above the player keeps
+  // swipes scrolling the feed; taps pause/play through the player's postMessage API.
+  const YT_ORIGIN = 'https://www.youtube-nocookie.com';
+  const ytThumb = (id) => `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+  const fmtDur = (s) => (s ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}` : '');
+  const agoText = (iso) => {
+    const h = (Date.now() - Date.parse(iso)) / 36e5;
+    if (!iso || !Number.isFinite(h)) return '';
+    return h < 1 ? `${Math.max(1, Math.round(h * 60))} min ago` : h < 24 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`;
+  };
+
+  function videoShell(reel, idx) {
+    const v = reel.video;
+    const el = document.createElement('section');
+    el.className = `reel vreel ${v.shorts ? 'short' : 'wide'}`;
+    el.dataset.idx = idx;
+    el.dataset.id = reel.id;
+    el.style.setProperty('--h', CATEGORIES.video.hue);
+    el.innerHTML = `
+      <div class="bg"><img class="vbg" alt="" loading="lazy" src="${esc(ytThumb(v.id))}"></div>
+      <div class="shade"></div>
+      <div class="vstage"><div class="vframe"><img class="vposter" alt="" loading="lazy" src="${esc(ytThumb(v.id))}"><span class="vspin"></span></div></div>
+      <div class="vtap"></div>
+      <div class="vprog"><i></i></div>
+      <div class="paused-ind">▶</div>
+      <aside class="rail">
+        ${rateGroup(reel)}
+        <button data-act="ask" aria-label="Ask Claude about this"><span class="ic ask-ic">${ICONS.ask}</span><small>Ask</small></button>
+        <button data-act="save" class="${state.savedReels[reel.id] ? 'on' : ''}" aria-label="Save"><span class="ic save-ic">${ICONS.save}</span><small>Save</small></button>
+        <button data-act="share" aria-label="Share"><span class="ic">${ICONS.share}</span><small>Share</small></button>
+        <button data-act="sound" class="${state.sound ? 'on' : ''}" aria-label="Sound"><span class="ic snd-ic">${state.sound ? ICONS.soundOn : ICONS.soundOff}</span><small>Sound</small></button>
+      </aside>
+      <footer class="meta">
+        <div class="meta-row"><span class="chip">${esc(v.channel)}</span>
+          ${reel.ticker ? `<span class="meta-ticker" data-sym="${esc(reel.ticker)}" data-kind="chip">$${esc(reel.ticker)}</span>` : ''}
+          <span class="meta-date">${esc([v.shorts ? 'Short' : '', fmtDur(v.seconds), agoText(reel.ts)].filter(Boolean).join(' · '))}</span></div>
+        <p class="meta-title">${esc(reel.title)}</p>
+        <div class="meta-links"><button class="linkbtn" data-act="info">Details</button>
+          <a class="linkbtn" href="https://www.youtube.com/watch?v=${esc(v.id)}" target="_blank" rel="noopener">Watch on YouTube</a></div>
+      </footer>`;
+    el._reel = reel;
+    el.querySelector('.rail').addEventListener('click', (e) => {
+      const r = e.target.closest('[data-rate]');
+      if (r) return onRate(r, reel, el, true);
+      const b = e.target.closest('button[data-act]');
+      if (b) onAction(b.dataset.act, b, reel);
+    });
+    el.querySelector('[data-act="info"]').addEventListener('click', () => openInfo(reel));
+    el.querySelector('.vtap').addEventListener('click', () => { if (state.player?.el === el) state.player.toggle(); });
+    el.querySelectorAll('.meta-ticker[data-sym]').forEach(paintLive);
+    return el;
+  }
+
+  class VideoPlayer {
+    constructor(el, reel) {
+      this.el = el;
+      this.reel = reel;
+      this.v = reel.video;
+      this.frame = null;
+      this.paused = false;
+      this.dur = this.v.seconds || 0;
+      this.counted = false;
+    }
+    start() {
+      if (!state.seen.has(this.reel.id)) { state.seen.add(this.reel.id); store.set('seen', [...state.seen].slice(-3000)); }
+      const p = new URLSearchParams({ autoplay: 1, mute: 1, playsinline: 1, controls: 0, rel: 0, modestbranding: 1, iv_load_policy: 3, enablejsapi: 1, origin: location.origin });
+      if (this.v.shorts) { p.set('loop', 1); p.set('playlist', this.v.id); }
+      const f = document.createElement('iframe');
+      f.src = `${YT_ORIGIN}/embed/${encodeURIComponent(this.v.id)}?${p}`;
+      f.allow = 'autoplay; encrypted-media; picture-in-picture';
+      f.title = this.reel.title;
+      f.addEventListener('load', () => {
+        this.post({ event: 'listening', id: this.v.id, channel: 'widget' });
+        setTimeout(() => this.applySound(), 300);
+      });
+      this.el.querySelector('.vframe').appendChild(f);
+      this.el.classList.add('playing');
+      this.frame = f;
+      // Reveal the player once it reports playback (or after 4s regardless), so loading shows the thumbnail, not black.
+      setTimeout(() => { if (this.frame === f) this.el.classList.add('started'); }, 4000);
+    }
+    post(msg) { try { this.frame?.contentWindow?.postMessage(JSON.stringify(msg), YT_ORIGIN); } catch { /* player not ready */ } }
+    cmd(func, args = []) { this.post({ event: 'command', func, args }); }
+    applySound() { this.cmd(state.sound ? 'unMute' : 'mute'); if (!this.paused) this.cmd('playVideo'); }
+    show() { this.applySound(); } // called when the sound button toggles
+    setPaused(p) {
+      this.paused = p;
+      this.el.classList.toggle('paused', p);
+      this.cmd(p ? 'pauseVideo' : 'playVideo');
+    }
+    toggle() { this.setPaused(!this.paused); }
+    onInfo(info) {
+      if (info.duration) this.dur = info.duration;
+      if (info.currentTime != null && this.dur) {
+        const frac = Math.min(1, info.currentTime / this.dur);
+        this.el.querySelector('.vprog i').style.width = (frac * 100).toFixed(1) + '%';
+        if (!this.counted && (frac > 0.6 || info.currentTime > 45)) { this.counted = true; countCompletion(this.reel); }
+      }
+      if (info.playerState === 1) this.el.classList.add('started');
+      if (info.playerState === 0 && !this.v.shorts) this.finish();
+    }
+    next() { this.el.nextElementSibling?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    prev() { this.cmd('seekTo', [0, true]); }
+    finish() { if (state.autoplay) this.next(); }
+    stop() {
+      this.frame?.remove();
+      this.frame = null;
+      this.el.classList.remove('playing', 'started', 'paused');
+    }
+  }
+
+  window.addEventListener('message', (e) => {
+    if (!/youtube(-nocookie)?\.com$/.test(new URL(e.origin || 'http://x').hostname)) return;
+    const p = state.player;
+    if (!(p instanceof VideoPlayer) || e.source !== p.frame?.contentWindow) return;
+    let d;
+    try { d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data; } catch { return; }
+    if (d?.event === 'onReady') p.applySound();
+    if (d?.event === 'infoDelivery' && d.info) p.onInfo(d.info);
+  });
+
+  function videoCard(reel) {
+    const v = reel.video;
+    const card = document.createElement('article');
+    card.className = 'card vcard';
+    card.style.setProperty('--h', CATEGORIES.video.hue);
+    card.innerHTML = `
+      <div class="vthumb ${v.shorts ? 'short' : ''}"><img alt="" loading="lazy" src="${esc(ytThumb(v.id))}"><span class="vplay-btn">▶</span>
+        ${v.seconds ? `<span class="vdur">${esc(fmtDur(v.seconds))}</span>` : ''}</div>
+      <header class="card-head"><div class="card-head-in"><div class="meta-row"><span class="chip">${esc(v.channel)}</span>
+        ${reel.ticker ? `<span class="meta-ticker" data-sym="${esc(reel.ticker)}" data-kind="chip">$${esc(reel.ticker)}</span>` : ''}<span class="meta-date">${esc(agoText(reel.ts))}</span></div>
+        <h3 class="card-title">${esc(reel.title)}</h3></div></header>
+      <footer class="card-foot card-end">${rateGroup(reel, 'inline')}
+        <div class="card-actions"><button data-act="ask" class="ask-pill" aria-label="Ask Claude about this">${ICONS.ask}<span>Ask</span></button>
+        <button data-act="save" class="${state.savedReels[reel.id] ? 'on' : ''}" aria-label="Save">${ICONS.save}</button>
+        <button data-act="share" aria-label="Share">${ICONS.share}</button>
+        <button data-act="info" aria-label="Details">${ICONS.info}</button></div></footer>`;
+    card.querySelector('.vthumb').addEventListener('click', (e) => {
+      const box = e.currentTarget;
+      if (box.querySelector('iframe')) return;
+      const p = new URLSearchParams({ autoplay: 1, playsinline: 1, rel: 0, modestbranding: 1 });
+      box.innerHTML = `<iframe src="${YT_ORIGIN}/embed/${encodeURIComponent(v.id)}?${p}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen title="${esc(reel.title)}"></iframe>`;
+      countCompletion(reel);
+    });
+    card.querySelector('.card-foot').addEventListener('click', (e) => {
+      const r = e.target.closest('[data-rate]');
+      if (r) return onRate(r, reel, card, false);
+      const b = e.target.closest('[data-act]');
+      if (!b) return;
+      if (b.dataset.act === 'save') b.classList.toggle('on', toggleSave(reel));
+      if (b.dataset.act === 'ask') openChat(reel);
+      if (b.dataset.act === 'share') shareReel(reel);
+      if (b.dataset.act === 'info') openInfo(reel);
+    });
+    card._reel = reel;
+    card.querySelector('.card-end')._reel = reel;
+    card.querySelectorAll('.meta-ticker[data-sym]').forEach(paintLive);
+    return card;
+  }
+
+  // Videos first (TikTok-style), with the data reels that carry real numbers in between.
+  function rankVideos() {
+    const profile = tasteProfile();
+    const mine = new Set(state.pa.map((h) => h.sym));
+    return (state.videos || []).filter((r) => !disliked(r))
+      .map((r) => ({ r, k: -(r.score || 0) - ((r.tickers || []).some((t) => mine.has(t)) ? 4 : 0) + (state.seen.has(r.id) ? 40 : 0) - prefScore(r, profile) * 12 }))
+      .sort((a, b) => a.k - b.k).map((x) => x.r);
   }
 
   // ---------- Learn: courses ----------
@@ -1713,6 +1895,7 @@
   }
 
   function infoCard(reel) {
+    if (reel.kind === 'video') return videoCard(reel);
     const cat = CATEGORIES[reel.category] || CATEGORIES.news;
     const ci = courseInfo(reel);
     const card = document.createElement('article');
@@ -1855,6 +2038,7 @@
     const lines = [`Reel: ${plain(reel.title)}`, `Section: ${CATEGORIES[reel.category]?.label || reel.category} · ${reel.tag || ''}`];
     if (reel.date) lines.push(`Date: ${reel.date}`);
     if (reel.ticker) lines.push(`Ticker: ${reel.ticker}`);
+    if (reel.video) lines.push(`This is a ${reel.video.shorts ? 'short ' : ''}video from ${reel.video.channel}: "${reel.title}" (https://www.youtube.com/watch?v=${reel.video.id}).`, reel.summary ? `Description: ${reel.summary}` : '');
     (reel.scenes || []).forEach((s) => {
       const t = [s.eyebrow, s.headline, s.body].filter(Boolean).map(plain).join(' — ');
       if (t) lines.push(t);
@@ -1868,6 +2052,7 @@
   }
 
   function suggestions(reel) {
+    if (reel.video) return ['What are the key takeaways?', 'What does this mean for stocks?', "What's the counterargument?", 'Give me more context on this'];
     const s = ['Explain this like I\'m brand new', 'Why does this matter for my money?', 'Give me a real-world example'];
     if (reel.category === 'ideas' || reel.ticker) s.splice(1, 0, `What's the biggest risk for ${reel.ticker || 'this'}?`);
     if (reel.category === 'macro') s.splice(1, 0, 'How could this affect stocks next?');

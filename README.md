@@ -6,7 +6,8 @@ TikTok-style reels for learning the US stock market: daily market recaps, macro 
 
 | Tab | What it is |
 |---|---|
-| **For You** | Full-screen reels you swipe through. Scenes auto-advance like stories; tap right/left to skip, hold to pause, turn on narration to listen hands-free. Ranked by your ratings, with lessons mixed in. |
+| **For You** | Video-first: real short clips from Bloomberg, CNBC, Yahoo Finance, FT, WSJ, Reuters and others, with data reels (market recap, movers, Fed watch, rates, stock ideas) in between. Ranked by your ratings and your PA stocks. |
+| **Watch** | Only the video clips: Shorts and short segments from the last ~2 days, refreshed hourly. Tap to pause, and use the sound button to unmute. |
 | **Dashboard** | Live board: US indexes, index futures, Treasury yields + the official yield curve (2s10s, 3m10y), commodities, the dollar and major currencies, crypto, global markets and S&P sectors, with intraday mini charts. Tap a row for its chart and headlines. |
 | **PA** | Your own stocks with live daily moves. Add shares and cost to see value, today's P&L and total gain. Shows upcoming earnings and the latest headlines on your names. Saved on your device. |
 | **Calendar** | FOMC meetings with each decision once announced, US and global data releases (actual vs. consensus), large-company earnings, the midterms, market holidays and options expiration. |

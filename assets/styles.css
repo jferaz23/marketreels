@@ -524,6 +524,36 @@ a { color: inherit; }
 .sheet code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 5px; font-family: var(--mono); font-size: 12.5px; }
 .sheet .btn { margin-top: 8px; text-align: center; text-decoration: none; }
 
+/* Video reels */
+.vreel .vbg { position: absolute; inset: -40px; width: calc(100% + 80px); height: calc(100% + 80px); object-fit: cover; filter: blur(28px) brightness(.45); }
+.vreel .shade { background: linear-gradient(to bottom, rgba(5,7,10,0.6), transparent 22%, transparent 70%, rgba(5,7,10,0.92)); }
+.vstage { position: absolute; z-index: 2; left: 0; right: 0; top: calc(var(--header-h) + var(--safe-top)); bottom: 0; display: grid; place-items: center; }
+.vreel.short .vstage { bottom: 0; }
+.vreel.wide .vstage { bottom: 22%; }
+.vframe { position: relative; width: 100%; overflow: hidden; background: #000; }
+.vreel.short .vframe { height: 100%; }
+.vreel.wide .vframe { aspect-ratio: 16 / 9; }
+.vframe iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; opacity: 0; transition: opacity .35s; }
+.vreel.started .vframe iframe { opacity: 1; }
+.vposter { z-index: 1; }
+.vreel.started .vposter { pointer-events: none; }
+.vreel.short .vframe iframe { transform: scale(1.02); }
+.vposter { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: opacity .4s; }
+.vreel.started .vposter { opacity: 0; }
+.vspin { position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px; border-radius: 50%; border: 3px solid rgba(255,255,255,0.25); border-top-color: #fff; opacity: 0; }
+.vreel.playing:not(.started) .vspin { opacity: 1; animation: spin .8s linear infinite; }
+.vtap { position: absolute; z-index: 3; left: 0; right: 64px; top: calc(var(--header-h) + var(--safe-top) + 10px); bottom: 150px; }
+.vprog { position: absolute; z-index: 5; left: 0; right: 0; bottom: calc(var(--safe-bottom)); height: 3px; background: rgba(255,255,255,0.15); }
+.vprog i { display: block; height: 100%; width: 0; background: #fff; transition: width .5s linear; }
+.vreel .meta { position: absolute; left: 0; right: 0; bottom: 0; z-index: 4; background: linear-gradient(to top, rgba(5,7,10,0.85), transparent); padding-top: 40px; }
+.vreel .chip { --cat: #ff6b81; }
+.vreel .paused-ind { font-size: 30px; }
+.vcard .vthumb { position: relative; aspect-ratio: 16 / 9; background: #000; cursor: pointer; overflow: hidden; }
+.vcard .vthumb img, .vcard .vthumb iframe { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border: 0; }
+.vplay-btn { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 56px; height: 56px; border-radius: 50%; background: rgba(0,0,0,0.55); display: grid; place-items: center; font-size: 22px; padding-left: 4px; }
+.vdur { position: absolute; right: 8px; bottom: 8px; background: rgba(0,0,0,0.75); border-radius: 6px; padding: 2px 6px; font: 700 12px var(--mono); }
+.vcard .card-head { background: none; padding-top: 12px; }
+
 /* Ask Claude */
 .rail button[data-act="ask"] .ic { background: color-mix(in srgb, #d97757 55%, rgba(0,0,0,0.35)); border-color: rgba(217,119,87,0.6); }
 .chat { --cat: #d97757; }

@@ -1,0 +1,38 @@
+name: Refresh videos
+
+# Pulls the latest finance clips from news outlets' YouTube channels into data/videos.json (free RSS, no key).
+# Vercel redeploys on each commit, so new clips reach the app within minutes.
+on:
+  schedule:
+    - cron: "15 11-23 * * 1-5"   # hourly, about 7 am - 7 pm ET
+    - cron: "15 13,19 * * 0,6"   # twice a day on weekends
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: feed
+  cancel-in-progress: false
+
+jobs:
+  videos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install feedparser requests
+      - name: Collect clips
+        run: python pipeline/videos.py
+      - name: Commit
+        run: |
+          git config user.name "marketreels-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/videos.json
+          if git diff --cached --quiet; then echo "No changes"; else
+            git commit -m "Update videos $(date -u +'%Y-%m-%d %H:%M') UTC"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push
+          fi

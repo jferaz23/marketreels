@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import calendar_events  # noqa: E402
+import videos  # noqa: E402
 from fed_odds import fed_odds  # noqa: E402
 from config import ASSETS, INDICES, VOLATILITY, WATCHLIST  # noqa: E402
 from macro import fetch_macro  # noqa: E402
@@ -105,6 +106,10 @@ def main():
         log.warning("calendar failed: %s", e)
         calendar = json.loads(calendar_events.OUT.read_text(encoding="utf-8")) if calendar_events.OUT.exists() else {}
     curve = json.loads(calendar_events.CURVE_OUT.read_text(encoding="utf-8")) if calendar_events.CURVE_OUT.exists() else {}
+    try:
+        videos.build()
+    except Exception as e:  # videos are a bonus; never lose the feed over them
+        log.warning("videos failed: %s", e)
 
     odds = []
     try:
