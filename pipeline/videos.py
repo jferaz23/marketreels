@@ -43,7 +43,11 @@ CHANNELS = [
 ]
 MAX_AGE_H = 60
 MAX_SECONDS = 12 * 60
-SKIP_TITLE = re.compile(r"\bLIVE\b|livestream|full episode|full show|podcast|\bwatch live\b", re.I)
+SKIP_TITLE = re.compile(r"\bLIVE\b|livestream|streaming now|full episode|full show|podcast|\bwatch live\b|\bpanel\b|"
+                        r"\bhour \d|\(\d{1,2}/\d{1,2}/\d{2,4}\)|\bsurveillance\b|\bdaybreak\b|the close\b|"
+                        r"market domination|morning brief|opening bid|catalysts\b|wealth!", re.I)
+# GitHub's servers usually get no length from YouTube; the app then skips anything long or live as it loads.
+UA_COOKIE = {"Cookie": "CONSENT=YES+cb; SOCS=CAI"}
 
 
 def _meta(vid):
@@ -55,7 +59,7 @@ def _meta(vid):
     except requests.RequestException:
         pass
     try:
-        html = requests.get(f"https://www.youtube.com/watch?v={vid}", headers=UA, timeout=15).text
+        html = requests.get(f"https://www.youtube.com/watch?v={vid}", headers={**UA, **UA_COOKIE}, timeout=15).text
         m = re.search(r'"lengthSeconds":"(\d+)"', html)
         out["seconds"] = int(m.group(1)) if m else None
         out["live"] = '"isLiveContent":true' in html or '"isLive":true' in html

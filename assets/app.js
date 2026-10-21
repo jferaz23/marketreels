@@ -1744,6 +1744,18 @@
     toggle() { this.setPaused(!this.paused); }
     onInfo(info) {
       if (info.duration) this.dur = info.duration;
+      // GitHub often can't learn clip lengths, so drop long shows and live streams here and never show them again.
+      const tooLong = info.duration > 15 * 60;
+      const isLive = info.playerState === 1 && info.currentTime > 4 && !info.duration;
+      if ((tooLong || isLive) && !this.skipped) {
+        this.skipped = true;
+        const skip = new Set(store.get('vskip', []));
+        skip.add(this.reel.id);
+        store.set('vskip', [...skip].slice(-300));
+        toast(isLive ? 'Skipping a live stream' : 'Skipping a long video');
+        this.next();
+        return;
+      }
       if (info.currentTime != null && this.dur) {
         const frac = Math.min(1, info.currentTime / this.dur);
         this.el.querySelector('.vprog i').style.width = (frac * 100).toFixed(1) + '%';
@@ -1815,7 +1827,8 @@
   function rankVideos() {
     const profile = tasteProfile();
     const mine = new Set(state.pa.map((h) => h.sym));
-    return (state.videos || []).filter((r) => !disliked(r))
+    const skip = new Set(store.get('vskip', []));
+    return (state.videos || []).filter((r) => !disliked(r) && !skip.has(r.id) && !(r.video.seconds > 15 * 60))
       .map((r) => ({ r, k: -(r.score || 0) - ((r.tickers || []).some((t) => mine.has(t)) ? 4 : 0) + (state.seen.has(r.id) ? 40 : 0) - prefScore(r, profile) * 12 }))
       .sort((a, b) => a.k - b.k).map((x) => x.r);
   }
