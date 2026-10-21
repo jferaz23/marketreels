@@ -1,6 +1,6 @@
 // App shell is cached for offline use; the feed is network-first so new reels show up right away.
-const VERSION = 'mr-v5';
-const SHELL = ['./', 'index.html', 'assets/styles.css?v=5', 'assets/app.js?v=5', 'manifest.webmanifest', 'assets/icons/icon.svg', 'assets/icons/icon-192.png'];
+const VERSION = 'mr-v6';
+const SHELL = ['./', 'index.html', 'assets/styles.css?v=6', 'assets/app.js?v=6', 'manifest.webmanifest', 'assets/icons/icon.svg', 'assets/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

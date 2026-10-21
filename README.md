@@ -27,7 +27,9 @@ On every reel and card:
 - *App closed:* free push notifications through the **ntfy** app. The *Stock alerts* workflow checks every ~10 minutes in market hours. Setup:
   1. Install ntfy and subscribe to the topic stored in the `NTFY_TOPIC` secret.
   2. Set the repository variable `PA_TICKERS` (e.g. `AAPL,NVDA`). The PA tab has a *Copy my tickers* button.
-  3. Optional: `ALERT_PCT` (default 3) and `APP_URL` (the page a notification opens).
+  3. Optional: `ALERT_PCT` (PA stocks, default 3), `BIG_ALERT_PCT` (big moves in the ~50 large caps the app tracks, default 5; 0 turns these off), `APP_URL` (the page a notification opens). Set `ALERTS` = `off` to pause.
+
+To add stocks to the PA tab on a new phone in one tap, open `<app url>/#pa=AAPL,NVDA,...`.
 
 **Experience level** (Settings): *Experienced* (default) leads with market updates, skips beginner explainer scenes and shows a lesson only every ~6 reels. *New to markets* explains everything.
 

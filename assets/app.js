@@ -188,6 +188,17 @@
     const deep = location.hash.match(/r=([^&]+)/);
     const tabLink = location.hash.match(/^#(board|pa|calendar)$/); // e.g. alert notifications open #pa
     if (tabLink) setTab(tabLink[1], false);
+    // One-tap import: #pa=AAPL,NVDA adds those tickers to PA on this device.
+    const paLink = location.hash.match(/^#pa=([A-Za-z0-9.^=,\-]+)$/);
+    if (paLink) {
+      const have = new Set(state.pa.map((h) => h.sym));
+      const added = [...new Set(paLink[1].toUpperCase().split(',').filter((s) => /^[A-Z0-9^=.\-]{1,12}$/.test(s) && !have.has(s)))];
+      added.forEach((sym, i) => state.pa.push({ sym, shares: null, cost: null, added: Date.now() + i }));
+      paSave();
+      history.replaceState(null, '', location.pathname + '#pa');
+      setTab('pa', false);
+      setTimeout(() => toast(added.length ? `Added ${added.join(', ')} to PA` : 'Those stocks are already in PA'), 600);
+    }
     if (deep) {
       const id = decodeURIComponent(deep[1]);
       if (!buildList(state.tab).some((r) => r.id === id)) setTab('foryou', false);
